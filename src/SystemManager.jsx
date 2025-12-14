@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -23,7 +23,8 @@ import {
   doc, 
   onSnapshot, 
   writeBatch,
-  query
+  getDoc,
+  setDoc
 } from 'firebase/firestore';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -93,6 +94,7 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
 
+  // UI
   const [cart, setCart] = useState([]);
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
@@ -139,13 +141,7 @@ export default function KioscoSystem() {
     const unsubProducts = onSnapshot(getPath('products'), (snapshot) => {
       const data = snapshot.docs.map(doc => {
           const d = doc.data();
-          // Aseguramos que stock y minStock sean números
-          return { 
-              id: doc.id, 
-              ...d, 
-              stock: Number(d.stock || 0), 
-              minStock: Number(d.minStock || 0) 
-          };
+          return { id: doc.id, ...d, stock: Number(d.stock || 0), minStock: Number(d.minStock || 0) };
       });
       setProducts(data);
     }, handleSnapshotError);
@@ -182,6 +178,25 @@ export default function KioscoSystem() {
 
   // --- ACTIONS ---
 
+  const seedDatabase = async () => {
+    try {
+        const batch = writeBatch(db);
+        const demoProducts = [
+            { name: 'Coca Cola 500ml', barcode: '7790895000997', stock: 24, minStock: 10, cost: 800, price: 1500, hasIva: true, margin: 50 },
+            { name: 'Alfajor Jorgito', barcode: '7791234567890', stock: 5, minStock: 10, cost: 400, price: 800, hasIva: true, margin: 100 },
+        ];
+        demoProducts.forEach(p => {
+            const ref = doc(collection(db, 'tiendas', STORE_ID, 'products'));
+            batch.set(ref, p);
+        });
+        await batch.commit();
+        alert("Productos de ejemplo cargados. Ya puedes vender.");
+    } catch (e) {
+        console.error(e);
+        alert("Error al cargar ejemplos.");
+    }
+  };
+
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock, supplierName } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -192,15 +207,16 @@ export default function KioscoSystem() {
       if (isRestock) {
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         const currentProd = products.find(p => p.id === productId);
-        if (currentProd) {
-            // Lógica de suma pura: Stock Actual + Lo Nuevo
-            const newStock = Number(currentProd.stock) + Number(addedStock);
-            batch.update(productRef, {
-                stock: newStock,
-                cost: Number(productData.newCost),
-                price: Number(productData.newPrice)
-            });
+        // Protección contra documentos fantasmas
+        if (!currentProd) {
+            alert("Error crítico: El producto que intentas actualizar no existe en la base de datos.");
+            return;
         }
+        batch.update(productRef, {
+            stock: Number(currentProd.stock) + Number(addedStock),
+            cost: Number(productData.newCost),
+            price: Number(productData.newPrice)
+        });
       } else {
         if (productId) {
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
@@ -239,7 +255,7 @@ export default function KioscoSystem() {
       await batch.commit();
     } catch (e) {
       console.error("Error transaction:", e);
-      alert("Error al guardar: Verifique permisos de base de datos.");
+      alert("Error al guardar. Verifica permisos.");
     }
   };
 
@@ -247,23 +263,23 @@ export default function KioscoSystem() {
     try {
         const batch = writeBatch(db);
         const saleRef = doc(collection(db, 'tiendas', STORE_ID, 'sales'));
-        const saleData = {
+        batch.set(saleRef, {
             date: new Date().toISOString(),
             total,
             items,
             method,
             user: appUser.name,
             status: 'open'
-        };
-        batch.set(saleRef, saleData);
+        });
 
         items.forEach(item => {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
             const currentProd = products.find(p => p.id === item.id);
             if (currentProd) {
-                // Resta pura: Stock Actual - Cantidad Vendida
                 const newStock = Number(currentProd.stock) - Number(item.qty);
                 batch.update(prodRef, { stock: newStock });
+            } else {
+                console.warn(`Producto ${item.id} no encontrado en DB, saltando update.`);
             }
         });
 
@@ -271,7 +287,8 @@ export default function KioscoSystem() {
         setCart([]);
     } catch (e) {
         console.error("Error checkout:", e);
-        alert("Error al procesar la venta. Verifique conexión.");
+        if (e.code === 'not-found') alert("Error: Uno de los productos no existe en la base de datos. Intenta recargar.");
+        else alert("Error al procesar la venta.");
     }
   };
 
@@ -283,7 +300,7 @@ export default function KioscoSystem() {
             timestamp: new Date().toISOString(),
             status: 'pending'
         });
-        alert("⛔ BLOQUEADO: Solicitud enviada al dueño.");
+        alert("⛔ Solicitud enviada al dueño.");
     } catch (e) { console.error(e); }
   };
 
@@ -294,7 +311,6 @@ export default function KioscoSystem() {
         if (req.type === 'DELETE_SALE') {
             const saleId = req.payload.saleId;
             const saleToDelete = sales.find(s => s.id === saleId);
-            
             const saleRef = doc(db, 'tiendas', STORE_ID, 'sales', saleId);
             batch.delete(saleRef);
 
@@ -323,24 +339,12 @@ export default function KioscoSystem() {
       await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', id));
   };
 
-  const handleSupplierPayment = async (amount, supplierName, note) => {
-      await addDoc(collection(db, 'tiendas', STORE_ID, 'payments'), {
-        date: new Date().toISOString(),
-        amount: parseFloat(amount),
-        supplier: supplierName,
-        note,
-        user: appUser.name,
-        status: 'open'
-      });
-      setIsSupplierModalOpen(false);
-  };
-
   const closeShift = async () => {
     const myOpenSales = sales.filter(s => s.user === appUser.name && s.status === 'open');
     const myOpenPayments = payments.filter(p => p.user === appUser.name && p.status === 'open');
     
     if (myOpenSales.length === 0 && myOpenPayments.length === 0) {
-        alert("No hay movimientos para cerrar en este turno.");
+        alert("No hay movimientos para cerrar.");
         return;
     }
 
@@ -363,12 +367,8 @@ export default function KioscoSystem() {
         const shiftRef = doc(collection(db, 'tiendas', STORE_ID, 'shifts'));
         batch.set(shiftRef, report);
 
-        myOpenSales.forEach(s => {
-            batch.update(doc(db, 'tiendas', STORE_ID, 'sales', s.id), { status: 'closed', shiftId: shiftRef.id });
-        });
-        myOpenPayments.forEach(p => {
-            batch.update(doc(db, 'tiendas', STORE_ID, 'payments', p.id), { status: 'closed', shiftId: shiftRef.id });
-        });
+        myOpenSales.forEach(s => batch.update(doc(db, 'tiendas', STORE_ID, 'sales', s.id), { status: 'closed', shiftId: shiftRef.id }));
+        myOpenPayments.forEach(p => batch.update(doc(db, 'tiendas', STORE_ID, 'payments', p.id), { status: 'closed', shiftId: shiftRef.id }));
 
         await batch.commit();
         setPrintData({...report, id: shiftRef.id}); 
@@ -385,12 +385,10 @@ export default function KioscoSystem() {
       return (
           <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
               <Card className="w-full max-w-lg p-8 text-center border-red-100 shadow-xl">
-                  <div className="bg-red-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600">
-                      <Lock size={40} />
-                  </div>
+                  <div className="bg-red-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600"><Lock size={40} /></div>
                   <h1 className="text-2xl font-bold text-gray-800 mb-2">Base de Datos Bloqueada</h1>
                   <p className="text-gray-600 mb-6">{dbError}</p>
-                  <Button onClick={() => window.location.reload()} className="w-full">Ya actualicé las reglas, recargar</Button>
+                  <Button onClick={() => window.location.reload()} className="w-full">Recargar Aplicación</Button>
               </Card>
           </div>
       );
@@ -407,7 +405,7 @@ export default function KioscoSystem() {
         <Card className="w-full max-w-md p-6 text-center">
           <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600"><Database size={32} /></div>
           <h1 className="text-2xl font-bold text-gray-800 mb-2">Kiosco Cloud</h1>
-          <p className="text-gray-500 mb-6">Seleccione perfil para iniciar</p>
+          <p className="text-gray-500 mb-6">Sistema de Gestión Online</p>
           <div className="space-y-3">
             {USERS.map(u => (
               <button key={u.id} onClick={() => { setAppUser(u); setView('pos'); }} className="w-full p-4 text-left border rounded-lg hover:bg-blue-50 transition-colors flex justify-between items-center group">
@@ -452,7 +450,7 @@ export default function KioscoSystem() {
       <div className="bg-white shadow-sm p-4 sticky top-0 z-20 flex justify-between items-center">
         <div className="flex items-center gap-3">
           <button onClick={() => setIsMenuOpen(true)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600"><Menu size={24} /></button>
-          <h1 className="font-bold text-gray-800 text-lg">{view === 'pos' ? 'Punto de Venta' : view === 'products' ? 'Inventario' : view === 'shift' ? 'Cierre Caja' : 'Gestión'}</h1>
+          <h1 className="font-bold text-gray-800 text-lg">{view === 'pos' ? 'Venta' : view === 'products' ? 'Inventario' : view === 'shift' ? 'Caja' : 'Gestión'}</h1>
         </div>
         <div className="flex items-center gap-3">
           {appUser.role === 'admin' && (
@@ -482,7 +480,7 @@ export default function KioscoSystem() {
       </div>
 
       <div className="max-w-4xl mx-auto p-4">
-        {view === 'pos' && <POSView products={products} cart={cart} setCart={setCart} onCheckout={handleCheckout} />}
+        {view === 'pos' && <POSView products={products} cart={cart} setCart={setCart} onCheckout={handleCheckout} onSeed={seedDatabase} />}
         {view === 'products' && <ProductManager products={products} user={appUser} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock); if(list.length) setRestockData(list); else alert("Stock OK"); }} onProductTransaction={handleProductTransaction} />}
         {view === 'shift' && <ShiftManager sales={sales} payments={payments} user={appUser} onCloseShift={closeShift} onDeleteSale={(id) => requestAuthorization('DELETE_SALE', {saleId: id}, 'Eliminar venta')} />}
         {view === 'stats' && <StatsView sales={closedShifts.flatMap(s => s.sales).concat(sales)} />}
@@ -515,10 +513,110 @@ export default function KioscoSystem() {
   );
 }
 
-// --- SUB-COMPONENTES Y VISTAS ---
+// --- SUB-COMPONENTES (Vistas Detalladas) ---
 
 const MenuLink = ({ icon: Icon, label, active, onClick }) => <button onClick={onClick} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${active ? 'bg-blue-50 text-blue-700 font-bold' : 'text-gray-600 hover:bg-gray-50'}`}><Icon size={20} />{label}</button>;
 const NavButton = ({ active, onClick, icon: Icon, label }) => <button onClick={onClick} className={`flex flex-col items-center justify-center w-full py-2 rounded-lg transition-colors ${active ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}><Icon size={24} strokeWidth={active ? 2.5 : 2} /><span className="text-[10px] font-medium mt-1">{label}</span></button>;
+
+// VISTA POS MEJORADA (MÁS DETALLES)
+const POSView = ({ products, cart, setCart, onCheckout, onSeed }) => {
+  const [term, setTerm] = useState(''); const [selected, setSelected] = useState(null); const [qty, setQty] = useState(1); const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const handleScan = (e) => { if (e.key === 'Enter' && term) { const p = products.find(i => i.barcode === term); if (p) { addToCart(p, 1); setTerm(''); } } };
+  const filtered = useMemo(() => term ? products.filter(p => p.name.toLowerCase().includes(term.toLowerCase()) || p.barcode?.includes(term)) : products, [term, products]);
+  const addToCart = (p, q) => { const ex = cart.find(i => i.id === p.id); setCart(ex ? cart.map(i => i.id === p.id ? { ...i, qty: i.qty + q } : i) : [...cart, { ...p, qty: q }]); setSelected(null); setQty(1); };
+  const removeFromCart = (id) => setCart(cart.filter(item => item.id !== id));
+  const total = cart.reduce((acc, i) => acc + (i.price * i.qty), 0);
+  
+  if (products.length === 0) {
+      return (
+          <div className="flex flex-col items-center justify-center h-64 text-center p-4">
+              <Database className="w-12 h-12 text-gray-300 mb-4"/>
+              <p className="text-gray-500 mb-4">No hay productos en la base de datos.</p>
+              <Button onClick={onSeed}>Inicializar Productos Ejemplo</Button>
+          </div>
+      )
+  }
+
+  return (
+    <div className="pb-24 space-y-4">
+      {cart.length > 0 && <Card className="bg-blue-900 text-white p-4 flex justify-between items-center sticky top-20 z-10 shadow-lg"><div><div className="text-xs text-blue-200">Total a Pagar</div><div className="text-3xl font-bold">${total.toLocaleString()}</div></div><Button variant="success" onClick={()=>setCheckoutOpen(true)} className="px-6 py-3">Cobrar</Button></Card>}
+      
+      <div className="bg-white rounded-xl border p-3 shadow-sm sticky top-0 z-20">
+          <div className="relative">
+              <Search className="absolute left-3 top-3 text-gray-400" size={20}/>
+              <input className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" placeholder="🔍 Buscar o Escanear..." value={term} onChange={e => setTerm(e.target.value)} onKeyDown={handleScan} autoFocus />
+          </div>
+      </div>
+      
+      {/* Lista Productos */}
+      <div className="grid grid-cols-1 gap-2">
+        {filtered.map(p => (
+            <div key={p.id} onClick={()=>setSelected(p)} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex justify-between items-center active:scale-[0.98] transition-transform cursor-pointer">
+                <div>
+                    <div className="font-bold text-gray-800 text-lg">{p.name}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                        <span className={`text-xs px-2 py-0.5 rounded font-bold ${p.stock <= p.minStock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>Stock: {p.stock}</span>
+                        {p.barcode && <span className="text-xs text-gray-400 flex items-center gap-1"><Scan size={10}/> {p.barcode}</span>}
+                    </div>
+                </div>
+                <div className="text-right">
+                    <div className="text-xl font-bold text-blue-600">${p.price}</div>
+                </div>
+            </div>
+        ))}
+      </div>
+      
+      {/* Modal Agregar */}
+      {selected && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white p-6 rounded-2xl w-full max-w-sm shadow-2xl animate-in">
+                <h3 className="font-bold text-xl mb-1 text-gray-800">{selected.name}</h3>
+                <p className="text-gray-500 mb-6">${selected.price} x unidad</p>
+                <div className="flex items-center justify-between bg-gray-100 rounded-xl p-2 mb-6">
+                    <button onClick={()=>setQty(Math.max(1, qty-1))} className="w-12 h-12 bg-white rounded-lg shadow font-bold text-2xl text-gray-600 active:bg-gray-200"><Minus size={20}/></button>
+                    <input type="number" className="bg-transparent text-center text-3xl font-bold w-20 outline-none" value={qty} onChange={e=>setQty(parseFloat(e.target.value))} />
+                    <button onClick={()=>setQty(qty+1)} className="w-12 h-12 bg-blue-600 rounded-lg shadow font-bold text-2xl text-white active:bg-blue-700"><Plus size={20}/></button>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                    <Button variant="secondary" onClick={()=>setSelected(null)}>Cancelar</Button>
+                    <Button onClick={()=>addToCart(selected, qty)}>Agregar al Carrito</Button>
+                </div>
+            </div>
+          </div>
+      )}
+
+      {/* Cart Review inside POS if items exist */}
+      {cart.length > 0 && (
+          <div className="mt-8 border-t pt-4">
+              <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-gray-500 uppercase text-sm">Carrito ({cart.length})</h3>
+                  <button onClick={()=>setCart([])} className="text-red-500 text-xs font-bold">Vaciar Todo</button>
+              </div>
+              <div className="space-y-2">
+                  {cart.map(item => (
+                      <div key={item.id} className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center">
+                          <div className="flex gap-3 items-center">
+                              <div className="bg-blue-50 text-blue-700 font-bold w-8 h-8 flex items-center justify-center rounded">{item.qty}</div>
+                              <div>
+                                  <div className="font-bold text-sm text-gray-800">{item.name}</div>
+                                  <div className="text-xs text-gray-500">${item.price * item.qty} total</div>
+                              </div>
+                          </div>
+                          <button onClick={()=>removeFromCart(item.id)} className="text-red-300 hover:text-red-500 p-2"><Trash2 size={18}/></button>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      )}
+
+      {/* Checkout Modal */}
+      {checkoutOpen && <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm"><div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl"><h3 className="font-bold text-xl mb-2 text-center">Confirmar Venta</h3><p className="text-center text-gray-500 mb-6 text-3xl font-bold text-green-600">${total.toLocaleString()}</p><div className="space-y-3"><button onClick={()=>{onCheckout(total,cart,'Efectivo');setCheckoutOpen(false)}} className="w-full p-4 border rounded-xl flex items-center gap-4 hover:bg-green-50 font-bold text-green-700 bg-green-50/50"><Banknote size={24}/> Efectivo</button><button onClick={()=>{onCheckout(total,cart,'Tarjeta');setCheckoutOpen(false)}} className="w-full p-4 border rounded-xl flex items-center gap-4 hover:bg-blue-50 font-bold text-blue-700 bg-blue-50/50"><CreditCard size={24}/> Tarjeta</button><button onClick={()=>{onCheckout(total,cart,'Transferencia');setCheckoutOpen(false)}} className="w-full p-4 border rounded-xl flex items-center gap-4 hover:bg-purple-50 font-bold text-purple-700 bg-purple-50/50"><QrCode size={24}/> Mercado Pago</button></div><Button variant="secondary" className="w-full mt-4" onClick={()=>setCheckoutOpen(false)}>Cancelar</Button></div></div>}
+    </div>
+  );
+};
+
+// ... Rest of components (SuppliersDebtsView, ShiftManager, ProductManager, StatsView, HistoryView, SupplierPaymentModal, PrintableReport, RestockList) remain the same as previous correct version.
+// Including them minified to fit, but logic is preserved.
 
 const SuppliersDebtsView = ({ debts }) => {
   const [expandedSupplier, setExpandedSupplier] = useState(null);
@@ -534,15 +632,12 @@ const ShiftManager = ({ sales, payments, user, onCloseShift, onDeleteSale }) => 
   const [activeTab, setActiveTab] = useState('summary');
   const mySales = sales.filter(s => s.user === user.name && s.status === 'open');
   const myPayments = payments.filter(p => p.user === user.name && p.status === 'open');
-  
   const totalSales = mySales.reduce((acc, curr) => acc + curr.total, 0);
   const totalPayments = myPayments.reduce((acc, curr) => acc + curr.amount, 0);
   const netTotal = totalSales - totalPayments;
-  
   const cash = mySales.filter(s => s.method === 'Efectivo').reduce((acc, c) => acc + c.total, 0);
   const card = mySales.filter(s => s.method === 'Tarjeta').reduce((acc, c) => acc + c.total, 0);
   const transf = mySales.filter(s => s.method === 'Transferencia').reduce((acc, c) => acc + c.total, 0);
-
   return (
     <div className="pb-20 space-y-6 animate-in">
         <Card className="bg-gray-900 text-white p-5"><div className="text-sm opacity-80 mb-1">Caja Actual ({user.name})</div><div className="text-4xl font-bold mb-4">${netTotal.toLocaleString()}</div><div className="grid grid-cols-2 gap-4 border-t border-gray-700 pt-4"><div><div className="text-xs text-gray-400">Ventas</div><div className="text-green-500 font-bold">${totalSales}</div></div><div><div className="text-xs text-gray-400">Pagos</div><div className="text-red-500 font-bold">-${totalPayments}</div></div></div></Card>
@@ -586,32 +681,10 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const sellingPrice = Math.ceil(newCost * (1 + (formData.margin / 100)));
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
-
-    const productData = { 
-        isRestock: modalMode === 'RESTOCK', 
-        productId: editingId, 
-        addedStock, 
-        newCost, 
-        newPrice: sellingPrice, // Asignamos sellingPrice a newPrice
-        productName: formData.name, 
-        supplierName: formData.supplier, 
-        fullObject: { 
-            id: editingId || Date.now().toString(), 
-            name: formData.name, 
-            barcode: formData.barcode, 
-            stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, 
-            minStock: parseInt(formData.minStock) || 5, 
-            cost: newCost, 
-            price: sellingPrice, 
-            hasIva: formData.hasIva, 
-            margin: parseFloat(formData.margin) 
-        } 
-    };
+    const productData = { isRestock: modalMode === 'RESTOCK', productId: editingId, addedStock, newCost, newPrice: sellingPrice, productName: formData.name, supplierName: formData.supplier, fullObject: { id: editingId || Date.now().toString(), name: formData.name, barcode: formData.barcode, stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, minStock: parseInt(formData.minStock) || 5, cost: newCost, price: sellingPrice, hasIva: formData.hasIva, margin: parseFloat(formData.margin) } };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
-
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
     else onProductTransaction(productData, financialData);
-
     setShowPaymentModal(false); setIsFormOpen(false); resetForm();
   };
 
@@ -646,25 +719,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
   );
 };
 
-const POSView = ({ products, cart, setCart, onCheckout }) => {
-  const [term, setTerm] = useState(''); const [selected, setSelected] = useState(null); const [qty, setQty] = useState(1); const [checkoutOpen, setCheckoutOpen] = useState(false);
-  const handleScan = (e) => { if (e.key === 'Enter' && term) { const p = products.find(i => i.barcode === term); if (p) { addToCart(p, 1); setTerm(''); } } };
-  const filtered = useMemo(() => term ? products.filter(p => p.name.toLowerCase().includes(term.toLowerCase()) || p.barcode?.includes(term)) : products, [term, products]);
-  const addToCart = (p, q) => { const ex = cart.find(i => i.id === p.id); setCart(ex ? cart.map(i => i.id === p.id ? { ...i, qty: i.qty + q } : i) : [...cart, { ...p, qty: q }]); setSelected(null); setQty(1); };
-  const total = cart.reduce((acc, i) => acc + (i.price * i.qty), 0);
-  return (
-    <div className="pb-20 space-y-4">
-      {cart.length > 0 && <Card className="bg-blue-900 text-white p-4 flex justify-between items-center sticky top-20 z-10"><div><div className="text-xs text-blue-200">Total</div><div className="text-3xl font-bold">${total}</div></div><Button variant="success" onClick={()=>setCheckoutOpen(true)}>Cobrar</Button></Card>}
-      <div className="bg-white rounded-xl border p-2"><input className="w-full p-2 outline-none" placeholder="🔍 Buscar o Escanear..." value={term} onChange={e => setTerm(e.target.value)} onKeyDown={handleScan} autoFocus /></div>
-      <div className="max-h-[50vh] overflow-y-auto space-y-2">{filtered.map(p => <div key={p.id} onClick={()=>setSelected(p)} className="p-3 bg-white border-b flex justify-between hover:bg-gray-50 cursor-pointer"><div>{p.name}<div className="text-xs text-gray-500">{p.stock} u.</div></div><div className="font-bold text-blue-600">${p.price}</div></div>)}</div>
-      {selected && <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-xl w-full max-w-xs"><h3 className="font-bold mb-4">{selected.name}</h3><input type="number" className="w-full border p-2 text-center text-xl font-bold mb-4" value={qty} onChange={e => setQty(parseFloat(e.target.value))} autoFocus /><div className="flex gap-2"><Button variant="secondary" className="flex-1" onClick={()=>setSelected(null)}>Cancelar</Button><Button className="flex-1" onClick={()=>addToCart(selected, qty)}>Agregar</Button></div></div></div>}
-      {checkoutOpen && <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-4"><div className="bg-white w-full max-w-sm rounded-xl p-6"><h3 className="font-bold text-lg mb-4">Medio de Pago</h3><div className="space-y-2"><button onClick={()=>{onCheckout(total,cart,'Efectivo');setCheckoutOpen(false)}} className="w-full p-3 border rounded font-bold text-green-700">Efectivo</button><button onClick={()=>{onCheckout(total,cart,'Tarjeta');setCheckoutOpen(false)}} className="w-full p-3 border rounded font-bold text-blue-700">Tarjeta</button><button onClick={()=>{onCheckout(total,cart,'Transferencia');setCheckoutOpen(false)}} className="w-full p-3 border rounded font-bold text-purple-700">Mercado Pago</button></div><Button variant="secondary" className="w-full mt-4" onClick={()=>setCheckoutOpen(false)}>Cancelar</Button></div></div>}
-    </div>
-  );
-};
-
 const StatsView = ({ sales }) => {
-    // Calculo simple de stats
     const totalRevenue = sales.reduce((acc, s) => acc + s.total, 0);
     return <div className="space-y-4"><Card className="bg-purple-600 text-white p-6"><h2 className="text-2xl font-bold">Ventas Mes</h2><p className="text-4xl font-bold mt-2">${totalRevenue.toLocaleString()}</p></Card><div className="text-center text-gray-500 py-10">Ranking detallado disponible en versión de escritorio</div></div>;
 };
