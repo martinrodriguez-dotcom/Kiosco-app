@@ -12,7 +12,6 @@ import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
-  signInWithCustomToken,
   onAuthStateChanged
 } from 'firebase/auth';
 import { 
@@ -23,23 +22,26 @@ import {
   deleteDoc, 
   doc, 
   onSnapshot, 
-  writeBatch,
-  query
+  writeBatch
 } from 'firebase/firestore';
 
-// --- CONFIGURACIÓN FIREBASE ---
-const firebaseConfig = typeof __firebase_config !== 'undefined' 
-  ? JSON.parse(__firebase_config) 
-  : { apiKey: "demo", authDomain: "demo", projectId: "demo" };
+// --- CONFIGURACIÓN FIREBASE (Tus Credenciales) ---
+const firebaseConfig = {
+  apiKey: "AIzaSyDfniZVLGzatksiK1qBeO259XqpY46PbX0",
+  authDomain: "kiosco-app-79b58.firebaseapp.com",
+  projectId: "kiosco-app-79b58",
+  storageBucket: "kiosco-app-79b58.firebasestorage.app",
+  messagingSenderId: "610299820416",
+  appId: "1:610299820416:web:a643e728ba5ee6d7a7e965"
+};
 
+// Inicializar Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// CORRECCIÓN CRÍTICA: Sanitizar appId para evitar errores de ruta en Firebase
-// Reemplazamos cualquier carácter que no sea letra, número, guion o guion bajo con un guion bajo.
-const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'kiosco-default';
-const appId = rawAppId.replace(/[^a-zA-Z0-9_-]/g, '_');
+// ID del Kiosco para la base de datos (Esto organiza tus datos en Firebase)
+const STORE_ID = 'mi-kiosco-principal';
 
 // --- Componentes UI Básicos ---
 
@@ -99,17 +101,14 @@ export default function KioscoSystem() {
   const [restockData, setRestockData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // 1. Autenticación
+  // 1. Autenticación (Anónima para facilitar el acceso rápido)
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
+        await signInAnonymously(auth);
       } catch (error) {
         console.error("Auth error:", error);
+        alert("Error de conexión con Firebase. Revisa la consola.");
       }
     };
     initAuth();
@@ -120,11 +119,13 @@ export default function KioscoSystem() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Sincronización de Datos
+  // 2. Sincronización de Datos (Listeners en tiempo real)
   useEffect(() => {
     if (!firebaseUser) return;
 
-    const getPath = (col) => collection(db, 'artifacts', appId, 'public', 'data', col);
+    // Función auxiliar para obtener referencias a colecciones
+    // Estructura: tiendas / mi-kiosco-principal / [productos, ventas, etc.]
+    const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
 
     const unsubProducts = onSnapshot(getPath('products'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -161,7 +162,7 @@ export default function KioscoSystem() {
     };
   }, [firebaseUser]);
 
-  // --- ACTIONS ---
+  // --- ACTIONS (Escritura en Base de Datos) ---
 
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock, supplierName } = productData;
@@ -171,7 +172,7 @@ export default function KioscoSystem() {
       const batch = writeBatch(db);
 
       if (isRestock) {
-        const productRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', productId);
+        const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         const currentProd = products.find(p => p.id === productId);
         if (currentProd) {
             batch.update(productRef, {
@@ -182,17 +183,17 @@ export default function KioscoSystem() {
         }
       } else {
         if (productId) {
-             const productRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', productId);
+             const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
              batch.update(productRef, productData.fullObject);
         } else {
-             const newProductRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'products'));
+             const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
              batch.set(newProductRef, productData.fullObject);
         }
       }
 
       if (totalCost > 0) {
         if (paymentStatus === 'PAID') {
-            const paymentRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'payments'));
+            const paymentRef = doc(collection(db, 'tiendas', STORE_ID, 'payments'));
             batch.set(paymentRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
@@ -202,7 +203,7 @@ export default function KioscoSystem() {
                 status: 'open' 
             });
         } else {
-            const debtRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'debts'));
+            const debtRef = doc(collection(db, 'tiendas', STORE_ID, 'debts'));
             batch.set(debtRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
@@ -218,14 +219,14 @@ export default function KioscoSystem() {
       await batch.commit();
     } catch (e) {
       console.error("Error transaction:", e);
-      alert("Error al guardar en base de datos");
+      alert("Error al guardar en base de datos. Verifique su conexión.");
     }
   };
 
   const handleCheckout = async (total, items, method) => {
     try {
         const batch = writeBatch(db);
-        const saleRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'sales'));
+        const saleRef = doc(collection(db, 'tiendas', STORE_ID, 'sales'));
         const saleData = {
             date: new Date().toISOString(),
             total,
@@ -237,7 +238,7 @@ export default function KioscoSystem() {
         batch.set(saleRef, saleData);
 
         items.forEach(item => {
-            const prodRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', item.id);
+            const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
             const currentProd = products.find(p => p.id === item.id);
             if (currentProd) {
                 batch.update(prodRef, { stock: (currentProd.stock || 0) - item.qty });
@@ -254,7 +255,7 @@ export default function KioscoSystem() {
 
   const requestAuthorization = async (type, payload, description) => {
     try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), {
+        await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), {
             type, payload, description,
             requester: appUser.name,
             timestamp: new Date().toISOString(),
@@ -272,12 +273,12 @@ export default function KioscoSystem() {
             const saleId = req.payload.saleId;
             const saleToDelete = sales.find(s => s.id === saleId);
             
-            const saleRef = doc(db, 'artifacts', appId, 'public', 'data', 'sales', saleId);
+            const saleRef = doc(db, 'tiendas', STORE_ID, 'sales', saleId);
             batch.delete(saleRef);
 
             if (saleToDelete && saleToDelete.items) {
                 saleToDelete.items.forEach(item => {
-                    const prodRef = doc(db, 'artifacts', appId, 'public', 'data', 'products', item.id);
+                    const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
                     const currentProd = products.find(p => p.id === item.id);
                     if (currentProd) {
                         batch.update(prodRef, { stock: (currentProd.stock || 0) + item.qty });
@@ -288,7 +289,7 @@ export default function KioscoSystem() {
             await handleProductTransaction(req.payload.productData, req.payload.financialData);
         }
 
-        const notifRef = doc(db, 'artifacts', appId, 'public', 'data', 'notifications', req.id);
+        const notifRef = doc(db, 'tiendas', STORE_ID, 'notifications', req.id);
         batch.delete(notifRef);
 
         await batch.commit();
@@ -297,11 +298,11 @@ export default function KioscoSystem() {
   };
 
   const handleDenyRequest = async (id) => {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', id));
+      await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', id));
   };
 
   const handleSupplierPayment = async (amount, supplierName, note) => {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'payments'), {
+      await addDoc(collection(db, 'tiendas', STORE_ID, 'payments'), {
         date: new Date().toISOString(),
         amount: parseFloat(amount),
         supplier: supplierName,
@@ -337,14 +338,14 @@ export default function KioscoSystem() {
 
     try {
         const batch = writeBatch(db);
-        const shiftRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'));
+        const shiftRef = doc(collection(db, 'tiendas', STORE_ID, 'shifts'));
         batch.set(shiftRef, report);
 
         myOpenSales.forEach(s => {
-            batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'sales', s.id), { status: 'closed', shiftId: shiftRef.id });
+            batch.update(doc(db, 'tiendas', STORE_ID, 'sales', s.id), { status: 'closed', shiftId: shiftRef.id });
         });
         myOpenPayments.forEach(p => {
-            batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'payments', p.id), { status: 'closed', shiftId: shiftRef.id });
+            batch.update(doc(db, 'tiendas', STORE_ID, 'payments', p.id), { status: 'closed', shiftId: shiftRef.id });
         });
 
         await batch.commit();
