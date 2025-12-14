@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw, LogIn
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw, LogIn, ArrowLeft
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -30,7 +30,7 @@ import {
   getDocs,
   query,
   where,
-  increment // IMPORTANTE: Para sumar stock atómicamente
+  increment 
 } from 'firebase/firestore';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -48,7 +48,6 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// ID del Kiosco para la base de datos
 const STORE_ID = 'mi-kiosco-principal';
 
 // --- Componentes UI Básicos ---
@@ -94,7 +93,8 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
   
-  const [currentShiftData, setCurrentShiftData] = useState(null);
+  // Estado de Turno Actual
+  const [currentShiftData, setCurrentShiftData] = useState(null); 
 
   // UI
   const [cart, setCart] = useState([]);
@@ -107,20 +107,21 @@ export default function KioscoSystem() {
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null); 
   
-  // Login & Register Inputs
+  // Login Inputs
   const [isRegistering, setIsRegistering] = useState(false);
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
-  const [registerName, setRegisterName] = useState('');
-  const [registerUsername, setRegisterUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  
+  // Register Inputs
+  const [regName, setRegName] = useState('');
+  const [regUsername, setRegUsername] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPass, setRegPass] = useState('');
+  
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
   // 1. Limpieza de Caché
-  useEffect(() => {
-    localStorage.clear(); 
-  }, []);
+  useEffect(() => { localStorage.clear(); }, []);
 
   // 2. Monitor de Autenticación
   useEffect(() => {
@@ -149,9 +150,7 @@ export default function KioscoSystem() {
             }
         } catch (e) {
             console.error("Error fetching user data:", e);
-            if (e.code === 'permission-denied') {
-                 setDbError("PERMISOS DENEGADOS: Ve a Firebase Console -> Firestore -> Reglas y configúralas a 'allow read, write: if true;'");
-            }
+            if (e.code === 'permission-denied') setDbError("PERMISOS DENEGADOS: Configure las reglas en Firebase Console.");
         }
       } else {
         setFirebaseUser(null);
@@ -179,33 +178,50 @@ export default function KioscoSystem() {
     return () => { unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs(); };
   }, [firebaseUser]);
 
-  // --- ACTIONS (DB) ---
+  // --- ACTIONS: LOGIN & REGISTER (FORMS SEPARADOS) ---
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (!loginUser || !loginPass) return alert("Complete todos los campos");
+    if (!loginUser) return alert("Falta ingresar el Usuario");
+    if (!loginPass) return alert("Falta ingresar la Contraseña");
+
     try {
         setLoading(true);
         const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
-        const q = query(usersRef, where("username", "==", loginUser));
+        const q = query(usersRef, where("username", "==", loginUser.trim()));
         const querySnapshot = await getDocs(q);
-        if (querySnapshot.empty) { setLoading(false); return alert("Usuario no encontrado."); }
+
+        if (querySnapshot.empty) {
+            setLoading(false);
+            return alert("Usuario no encontrado.");
+        }
+
         const userDoc = querySnapshot.docs[0].data();
         await signInWithEmailAndPassword(auth, userDoc.email, loginPass); 
-    } catch (error) { console.error(error); setLoading(false); alert("Error de acceso: Credenciales inválidas."); }
+    } catch (error) { 
+        console.error(error); 
+        setLoading(false); 
+        alert("Contraseña incorrecta o error de acceso."); 
+    }
   };
 
   const handleRegister = async (e) => {
       e.preventDefault();
-      if (!email || !password || !registerName || !registerUsername) return alert("Complete todos los campos");
+      if (!regEmail || !regPass || !regName || !regUsername) return alert("Complete todos los campos del registro");
+
       try {
           setLoading(true);
           const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
-          const q = query(usersRef, where("username", "==", registerUsername));
+          const q = query(usersRef, where("username", "==", regUsername.trim()));
           const querySnapshot = await getDocs(q);
-          if (!querySnapshot.empty) { setLoading(false); return alert("El usuario ya existe."); }
-          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+
+          if (!querySnapshot.empty) {
+              setLoading(false);
+              return alert("El nombre de usuario ya está en uso.");
+          }
+
+          const userCredential = await createUserWithEmailAndPassword(auth, regEmail, regPass);
           await setDoc(doc(db, 'tiendas', STORE_ID, 'users', userCredential.user.uid), {
-              name: registerName, username: registerUsername, email: email, role: 'user', createdAt: new Date().toISOString()
+              name: regName, username: regUsername.trim(), email: regEmail, role: 'user', createdAt: new Date().toISOString()
           });
           alert("Registrado con éxito.");
       } catch (error) { setLoading(false); alert("Error al registrar: " + error.message); }
@@ -218,57 +234,30 @@ export default function KioscoSystem() {
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCION DE PRODUCTOS CORREGIDA (ATOMICA) ---
+  // ... (Transacciones y demás funciones igual que antes) ...
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
-
     try {
       const batch = writeBatch(db);
-      
-      // 1. Lógica de Producto (Corrección "No document to update")
       if (isRestock) {
-        // En lugar de update, usamos set con merge para seguridad.
-        // Y usamos increment() para no depender del estado local.
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-        
         batch.set(productRef, {
-            stock: increment(Number(addedStock)), // Suma atómica del lado del servidor
+            stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
         }, { merge: true });
-
       } else {
-        // Crear o Editar producto completo
-        // Aseguramos que productId existe o creamos uno nuevo
-        const finalId = productId || doc(collection(db, 'tiendas', STORE_ID, 'products')).id;
-        const productRef = doc(db, 'tiendas', STORE_ID, 'products', finalId);
-        
-        // Asignamos el ID al objeto para guardarlo dentro del documento también
-        const dataToSave = { ...productData.fullObject, id: finalId };
-        batch.set(productRef, dataToSave, { merge: true });
+        const ref = productId ? doc(db, 'tiendas', STORE_ID, 'products', productId) : doc(collection(db, 'tiendas', STORE_ID, 'products'));
+        batch.set(ref, productData.fullObject, { merge: true });
       }
-
-      // 2. Lógica Financiera
       if (totalCost > 0) {
           const col = paymentStatus === 'PAID' ? 'payments' : 'debts';
           const ref = doc(collection(db, 'tiendas', STORE_ID, col));
-          batch.set(ref, { 
-              date: new Date().toISOString(), 
-              amount: totalCost, 
-              supplier: productData.supplierName || 'General', 
-              note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial`, 
-              user: userData.name, 
-              status: paymentStatus==='PAID'?'open':'PENDING', 
-              ...(paymentStatus==='OWED' && {productName: productData.productName, qty: addedStock}) 
-          });
+          batch.set(ref, { date: new Date().toISOString(), amount: totalCost, supplier: productData.supplierName || 'General', note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial`, user: userData.name, status: paymentStatus==='PAID'?'open':'PENDING', ...(paymentStatus==='OWED' && {productName: productData.productName, qty: addedStock}) });
       }
-      
       await batch.commit();
-    } catch (e) { 
-        console.error(e);
-        alert("Error crítico en base de datos: " + e.message); 
-    }
+    } catch (e) { alert("Error: " + e.message); }
   };
 
   const handleCheckout = async (total, items, method) => {
@@ -278,7 +267,6 @@ export default function KioscoSystem() {
         batch.set(saleRef, { date: new Date().toISOString(), total, items, method, user: userData.name, status: 'open' });
         items.forEach(item => {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
-            // Usamos increment con valor negativo para restar
             batch.update(prodRef, { stock: increment(-Number(item.qty)) });
         });
         await batch.commit();
@@ -286,17 +274,11 @@ export default function KioscoSystem() {
     } catch (e) { alert("Error venta: " + e.message); }
   };
 
-  // ... Permisos y Borrado ...
   const requestAuthorization = async (type, payload, description) => { try { await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), { type, payload, description, requester: userData.name, timestamp: new Date().toISOString(), status: 'pending' }); alert("⛔ Solicitud enviada."); } catch (e) { console.error(e); } };
   const handleDeleteProduct = async (prodId) => { if (userData.role !== 'admin') return alert("Solo admin"); if (window.confirm("¿Borrar producto?")) { await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); } };
   const handleDeleteSale = async (saleId, items) => { if (userData.role === 'admin') { if(window.confirm('¿Anular venta?')) executeDeleteSale(saleId, items); } else requestAuthorization('DELETE_SALE', { saleId }, `Solicita anular venta`); };
   const executeDeleteSale = async (saleId, items) => { const batch = writeBatch(db); batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', saleId)); if (items) items.forEach(item => { const ref = doc(db, 'tiendas', STORE_ID, 'products', item.id); batch.update(ref, { stock: increment(Number(item.qty)) }); }); await batch.commit(); };
-  
-  const handleApproveRequest = async (req) => { 
-      if (req.type === 'DELETE_SALE') { const sale = sales.find(s => s.id === req.payload.saleId); if (sale) executeDeleteSale(sale.id, sale.items); } 
-      else if (req.type === 'PRODUCT_TRANSACTION' || req.type === 'EDIT_PRODUCT') await handleProductTransaction(req.payload.productData, req.payload.financialData); 
-      await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id)); setShowNotifications(false); 
-  };
+  const handleApproveRequest = async (req) => { if (req.type === 'DELETE_SALE') { const sale = sales.find(s => s.id === req.payload.saleId); if (sale) executeDeleteSale(sale.id, sale.items); } else if (req.type === 'PRODUCT_TRANSACTION' || req.type === 'EDIT_PRODUCT') await handleProductTransaction(req.payload.productData, req.payload.financialData); await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id)); setShowNotifications(false); };
   const handleDenyRequest = async (id) => await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', id));
 
   const closeShift = async () => {
@@ -314,7 +296,6 @@ export default function KioscoSystem() {
         transfer: myOpenSales.filter(s => s.method === 'Transferencia').reduce((acc, curr) => acc + curr.total, 0),
       }
     };
-
     try {
         const batch = writeBatch(db);
         const shiftRef = doc(collection(db, 'tiendas', STORE_ID, 'shifts'));
@@ -336,19 +317,39 @@ export default function KioscoSystem() {
 
   if (!userData || showShiftStartModal) {
     if (userData && showShiftStartModal) return <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4"><ShiftStartModal onStart={handleStartShift} username={userData.name} onCancel={handleLogout} /></div>;
+    
+    // --- VISTA LOGIN / REGISTRO SEPARADA ---
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
         <Card className="w-full max-w-sm p-8 text-center shadow-xl border border-gray-100">
             <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-blue-200 shadow-lg"><Database size={32} /></div>
             <h1 className="text-2xl font-bold text-gray-800 mb-1">Kiosco Pro</h1>
             <p className="text-gray-400 text-sm mb-8">Gestión de Kiosco & Stock</p>
-            <form onSubmit={isRegistering ? handleRegister : handleLogin} className="space-y-4 text-left">
-                {isRegistering && (<><div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Nombre Completo</label><div className="relative"><User className="absolute left-3 top-3 text-gray-400" size={18}/><input type="text" value={registerName} onChange={e=>setRegisterName(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ej. Juan Pérez" required /></div></div><div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Email (Privado)</label><div className="relative"><User className="absolute left-3 top-3 text-gray-400" size={18}/><input type="email" value={email} onChange={e=>setEmail(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="correo@ejemplo.com" required /></div></div></>)}
-                <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">{isRegistering ? 'Crear Usuario' : 'Usuario'}</label><div className="relative"><User className="absolute left-3 top-3 text-gray-400" size={18}/>{isRegistering ? (<input type="text" value={registerUsername} onChange={e=>setRegisterUsername(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ej. cajero1" required />) : (<input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingrese usuario" required />)}</div></div>
-                <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label><div className="relative"><Key className="absolute left-3 top-3 text-gray-400" size={18}/><input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required /></div></div>
-                <Button type="submit" className="w-full py-3 mt-2">{isRegistering ? 'Crear Cuenta' : 'Iniciar Sesión'}</Button>
-            </form>
-            <div className="mt-6 text-sm text-gray-500">{isRegistering ? "¿Ya tienes cuenta? " : "¿No tienes cuenta? "}<button onClick={() => setIsRegistering(!isRegistering)} className="text-blue-600 font-bold hover:underline">{isRegistering ? "Inicia Sesión" : "Regístrate"}</button></div>
+            
+            {isRegistering ? (
+                <form onSubmit={handleRegister} className="space-y-4 text-left animate-in">
+                    <h3 className="text-sm font-bold text-blue-600 uppercase text-center mb-4">Crear Cuenta</h3>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Nombre Completo</label><input type="text" value={regName} onChange={e=>setRegName(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ej. Juan Pérez" required /></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario (Login)</label><input type="text" value={regUsername} onChange={e=>setRegUsername(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ej. cajero1" required /></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Email (Recuperación)</label><input type="email" value={regEmail} onChange={e=>setRegEmail(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="email@ejemplo.com" required /></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label><input type="password" value={regPass} onChange={e=>setRegPass(e.target.value)} className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required /></div>
+                    <Button type="submit" className="w-full py-3 mt-4">Registrarse</Button>
+                    <button type="button" onClick={() => setIsRegistering(false)} className="w-full text-center text-gray-500 text-sm mt-4 hover:underline">Volver al Login</button>
+                </form>
+            ) : (
+                <form onSubmit={handleLogin} className="space-y-4 text-left animate-in">
+                    <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario</label>
+                        <div className="relative"><User className="absolute left-3 top-3 text-gray-400" size={18}/><input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingrese usuario" required /></div>
+                    </div>
+                    <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label>
+                        <div className="relative"><Key className="absolute left-3 top-3 text-gray-400" size={18}/><input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required /></div>
+                    </div>
+                    <Button type="submit" className="w-full py-3 mt-2">Iniciar Sesión</Button>
+                    <div className="mt-6 text-center text-sm text-gray-500">¿No tienes cuenta? <button type="button" onClick={() => setIsRegistering(true)} className="text-blue-600 font-bold hover:underline">Regístrate</button></div>
+                </form>
+            )}
         </Card>
       </div>
     );
@@ -356,6 +357,7 @@ export default function KioscoSystem() {
 
   return (
     <div className="min-h-screen bg-gray-100 pb-20 md:pb-0 relative overflow-x-hidden">
+      {/* Menu & Header */}
       {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{userData.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /><button onClick={handleFactoryReset} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors text-red-600 hover:bg-red-50 mt-4"><RefreshCw size={20} />Restablecer de Fábrica</button></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { handleLogout(); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Sesión</button></div></div></div>}
 
       <div className="bg-white shadow-sm p-4 sticky top-0 z-20 flex justify-between items-center">
