@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -24,7 +24,10 @@ import {
   onSnapshot, 
   writeBatch,
   getDoc,
-  setDoc
+  setDoc,
+  getDocs,
+  query,
+  where
 } from 'firebase/firestore';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -41,6 +44,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// ID del Kiosco para la base de datos
 const STORE_ID = 'mi-kiosco-principal';
 
 // --- Componentes UI Básicos ---
@@ -71,13 +76,6 @@ const Button = ({ onClick, children, variant = "primary", className = "", icon: 
   );
 };
 
-// USUARIOS (Simulados para Login)
-const USERS = [
-  { id: 1, username: 'admin', password: '123', name: 'Dueño (Admin)', role: 'admin' },
-  { id: 2, username: 'cajero1', password: '123', name: 'Cajero Mañana', role: 'user' },
-  { id: 3, username: 'cajero2', password: '123', name: 'Cajero Tarde', role: 'user' },
-];
-
 // --- App Principal ---
 
 export default function KioscoSystem() {
@@ -85,7 +83,7 @@ export default function KioscoSystem() {
   const [appUser, setAppUser] = useState(null); 
   const [view, setView] = useState('login'); 
   
-  // Datos Globales
+  // Estados de Datos
   const [products, setProducts] = useState([]);
   const [sales, setSales] = useState([]);
   const [payments, setPayments] = useState([]); 
@@ -107,12 +105,14 @@ export default function KioscoSystem() {
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null); 
   
-  // Login Inputs
+  // Login & Register Inputs
+  const [isRegistering, setIsRegistering] = useState(false);
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
+  const [registerName, setRegisterName] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Autenticación Firebase
+  // 1. Autenticación Firebase (Anónima para conexión técnica, lógica propia para usuarios)
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -133,40 +133,129 @@ export default function KioscoSystem() {
   // 2. Sincronización de Datos
   useEffect(() => {
     if (!firebaseUser) return;
+
     const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
+    
     const handleSnapshotError = (err) => {
-        if (err.code === 'permission-denied') setDbError("PERMISOS DENEGADOS: Configura las reglas en Firebase.");
+        console.error("Firestore Snapshot Error:", err);
+        if (err.code === 'permission-denied') {
+            setDbError("PERMISOS DENEGADOS: Ve a Firebase Console -> Firestore -> Reglas y configúralas a 'allow read, write: if true;'");
+        } else {
+            // Ignoramos errores menores de desconexión
+        }
     };
 
-    const unsubProducts = onSnapshot(getPath('products'), (snap) => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data(), stock: Number(d.data().stock||0), minStock: Number(d.data().minStock||0), cost: Number(d.data().cost||0), price: Number(d.data().price||0) }))), handleSnapshotError);
-    const unsubSales = onSnapshot(getPath('sales'), (snap) => setSales(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
-    const unsubPayments = onSnapshot(getPath('payments'), (snap) => setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
-    const unsubDebts = onSnapshot(getPath('debts'), (snap) => setDebts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
-    const unsubShifts = onSnapshot(getPath('shifts'), (snap) => setClosedShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
-    const unsubNotifs = onSnapshot(getPath('notifications'), (snap) => setNotifications(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))), handleSnapshotError);
+    const unsubProducts = onSnapshot(getPath('products'), (snapshot) => {
+      const data = snapshot.docs.map(doc => {
+          const d = doc.data();
+          return { 
+              id: doc.id, 
+              ...d, 
+              stock: Number(d.stock || 0), 
+              minStock: Number(d.minStock || 0),
+              cost: Number(d.cost || 0),
+              price: Number(d.price || 0)
+          };
+      });
+      setProducts(data);
+    }, handleSnapshotError);
 
-    return () => { unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs(); };
+    const unsubSales = onSnapshot(getPath('sales'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setSales(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    }, handleSnapshotError);
+
+    const unsubPayments = onSnapshot(getPath('payments'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setPayments(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    }, handleSnapshotError);
+
+    const unsubDebts = onSnapshot(getPath('debts'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setDebts(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    }, handleSnapshotError);
+
+    const unsubShifts = onSnapshot(getPath('shifts'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setClosedShifts(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    }, handleSnapshotError);
+
+    const unsubNotifs = onSnapshot(getPath('notifications'), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setNotifications(data.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)));
+    }, handleSnapshotError);
+
+    return () => {
+      unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs();
+    };
   }, [firebaseUser]);
 
-  // --- LOGIC: LOGIN & SHIFT ---
-  const handleLogin = (e) => {
+  // --- LOGIC: LOGIN & REGISTER ---
+
+  const handleLogin = async (e) => {
     e.preventDefault();
-    const userFound = USERS.find(u => u.username === loginUser && u.password === loginPass);
-    if (userFound) {
-      setAppUser(userFound);
-      setLoginUser('');
-      setLoginPass('');
-      // Si NO es admin, forzar apertura de caja
-      if (userFound.role !== 'admin') {
-        setShowShiftStartModal(true);
-      } else {
-        setView('pos');
-        // Admin entra sin caja inicial (o asume la existente)
-        setCurrentShiftData({ initialChange: 0, supplierFund: 0 });
-      }
-    } else {
-      alert("Credenciales incorrectas");
+    if (!loginUser || !loginPass) return alert("Complete todos los campos");
+
+    try {
+        const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
+        const q = query(usersRef, where("username", "==", loginUser), where("password", "==", loginPass));
+        const querySnapshot = await getDocs(q);
+
+        if (!querySnapshot.empty) {
+            const userData = querySnapshot.docs[0].data();
+            const userWithId = { id: querySnapshot.docs[0].id, ...userData };
+            
+            setAppUser(userWithId);
+            setLoginUser('');
+            setLoginPass('');
+            
+            if (userWithId.role !== 'admin') {
+                setShowShiftStartModal(true);
+            } else {
+                setView('pos');
+                setCurrentShiftData({ initialChange: 0, supplierFund: 0 });
+            }
+        } else {
+            alert("Usuario o contraseña incorrectos");
+        }
+    } catch (error) {
+        console.error("Login error:", error);
+        alert("Error al iniciar sesión: " + error.message);
     }
+  };
+
+  const handleRegister = async (e) => {
+      e.preventDefault();
+      if (!loginUser || !loginPass || !registerName) return alert("Complete todos los campos");
+
+      try {
+          // Verificar si ya existe
+          const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
+          const q = query(usersRef, where("username", "==", loginUser));
+          const querySnapshot = await getDocs(q);
+
+          if (!querySnapshot.empty) {
+              alert("El nombre de usuario ya está en uso.");
+              return;
+          }
+
+          // Crear usuario con rol 'user' por defecto
+          await addDoc(usersRef, {
+              username: loginUser,
+              password: loginPass, // Nota: En producción esto debería estar encriptado
+              name: registerName,
+              role: 'user', // Rol por defecto, Admin se cambia en DB
+              createdAt: new Date().toISOString()
+          });
+
+          alert("Usuario registrado con éxito. Ahora puede iniciar sesión.");
+          setIsRegistering(false);
+          setRegisterName('');
+          setLoginPass(''); // Limpiar pass pero dejar user para facilitar login
+      } catch (error) {
+          console.error("Register error:", error);
+          alert("Error al registrar: " + error.message);
+      }
   };
 
   const handleStartShift = (initialData) => {
@@ -195,30 +284,42 @@ export default function KioscoSystem() {
             batch.set(ref, p);
         });
         await batch.commit();
-        alert("Productos cargados.");
-    } catch (e) { alert("Error: " + e.message); }
+        alert("Productos de ejemplo cargados. Ya puedes vender.");
+    } catch (e) {
+        console.error(e);
+        alert("Error al cargar ejemplos: " + e.message);
+    }
   };
 
   const handleProductTransaction = async (productData, financialData) => {
-    const { isRestock, productId, addedStock } = productData;
+    const { isRestock, productId, addedStock, supplierName } = productData;
     const { totalCost, paymentStatus } = financialData; 
 
     try {
       const batch = writeBatch(db);
-      const prodRef = productId ? doc(db, 'tiendas', STORE_ID, 'products', productId) : doc(collection(db, 'tiendas', STORE_ID, 'products'));
-      
+
       if (isRestock) {
-          const currentProd = products.find(p => p.id === productId);
-          if (currentProd) {
-              batch.update(prodRef, {
-                  stock: Number(currentProd.stock) + Number(addedStock),
-                  cost: Number(productData.newCost),
-                  price: Number(productData.newPrice)
-              });
-          }
+        const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
+        const currentProd = products.find(p => p.id === productId);
+        
+        if (currentProd) {
+            batch.update(productRef, {
+                stock: Number(currentProd.stock) + Number(addedStock),
+                cost: Number(productData.newCost),
+                price: Number(productData.newPrice)
+            });
+        } else {
+             alert("Error: El producto no existe en la base de datos.");
+             return;
+        }
       } else {
-          // Creación o Edición total
-          batch.set(prodRef, productData.fullObject, { merge: true });
+        if (productId) {
+             const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
+             batch.update(productRef, productData.fullObject);
+        } else {
+             const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
+             batch.set(newProductRef, productData.fullObject);
+        }
       }
 
       if (totalCost > 0) {
@@ -227,17 +328,17 @@ export default function KioscoSystem() {
             batch.set(paymentRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
-                supplier: productData.supplierName || 'General',
+                supplier: supplierName || 'Proveedor General',
                 note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial: ${productData.productName}`,
                 user: appUser.name,
                 status: 'open' 
             });
-        } else if (paymentStatus === 'OWED') {
+        } else {
             const debtRef = doc(collection(db, 'tiendas', STORE_ID, 'debts'));
             batch.set(debtRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
-                supplier: productData.supplierName || 'Sin Proveedor',
+                supplier: supplierName || 'Sin Proveedor',
                 productName: productData.productName,
                 qty: addedStock,
                 user: appUser.name,
@@ -245,8 +346,12 @@ export default function KioscoSystem() {
             });
         }
       }
+
       await batch.commit();
-    } catch (e) { console.error(e); alert("Error al guardar."); }
+    } catch (e) {
+      console.error("Error transaction:", e);
+      alert("Error al guardar: " + e.message);
+    }
   };
 
   const handleCheckout = async (total, items, method) => {
@@ -255,37 +360,49 @@ export default function KioscoSystem() {
         const saleRef = doc(collection(db, 'tiendas', STORE_ID, 'sales'));
         batch.set(saleRef, {
             date: new Date().toISOString(),
-            total, items, method,
+            total,
+            items,
+            method,
             user: appUser.name,
             status: 'open'
         });
+
         items.forEach(item => {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
             const currentProd = products.find(p => p.id === item.id);
-            if (currentProd) batch.update(prodRef, { stock: Number(currentProd.stock) - Number(item.qty) });
+            if (currentProd) {
+                const newStock = Number(currentProd.stock) - Number(item.qty);
+                batch.update(prodRef, { stock: newStock });
+            }
         });
+
         await batch.commit();
         setCart([]);
-    } catch (e) { alert("Error al vender: " + e.message); }
+    } catch (e) {
+        console.error("Error checkout:", e);
+        if (e.code === 'not-found') alert("Error: Intenta recargar la página, datos desactualizados.");
+        else alert("Error al procesar la venta: " + e.message);
+    }
   };
 
-  // --- PERMISOS Y ELIMINACIÓN ---
   const requestAuthorization = async (type, payload, description) => {
     try {
         await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), {
-            type, payload, description, requester: appUser.name, timestamp: new Date().toISOString(), status: 'pending'
+            type, payload, description,
+            requester: appUser.name,
+            timestamp: new Date().toISOString(),
+            status: 'pending'
         });
-        alert("⛔ BLOQUEADO: Solicitud enviada al dueño.");
+        alert("⛔ Solicitud enviada al dueño.");
     } catch (e) { console.error(e); }
   };
 
   const handleDeleteProduct = async (prodId) => {
-      // Solo el dueño puede borrar productos. No hay flujo de autorización para esto (es muy destructivo).
       if (appUser.role !== 'admin') {
-          alert("Solo el dueño puede eliminar productos del sistema.");
+          alert("Solo el dueño puede eliminar productos.");
           return;
       }
-      if (window.confirm("¿Estás seguro de ELIMINAR este producto y todo su historial de stock?")) {
+      if (window.confirm("¿Estás seguro de ELIMINAR este producto?")) {
           try {
             await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId));
           } catch (e) { alert("Error al borrar"); }
@@ -293,7 +410,6 @@ export default function KioscoSystem() {
   };
 
   const handleDeleteSale = async (saleId, items) => {
-      // Dueño: directo. Cajero: pide permiso.
       if (appUser.role === 'admin') {
         if(window.confirm('¿Eliminar esta venta y devolver stock?')) {
             executeDeleteSale(saleId, items);
@@ -318,16 +434,30 @@ export default function KioscoSystem() {
   };
 
   const handleApproveRequest = async (req) => {
-    if (req.type === 'DELETE_SALE') {
-        const sale = sales.find(s => s.id === req.payload.saleId);
-        if (sale) executeDeleteSale(sale.id, sale.items);
-    } else if (req.type === 'PRODUCT_TRANSACTION') {
-        handleProductTransaction(req.payload.productData, req.payload.financialData);
-    } else if (req.type === 'EDIT_PRODUCT') { // Caso simple de edición
-        handleProductTransaction(req.payload.productData, req.payload.financialData);
-    }
-    await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id));
-    setShowNotifications(false);
+    try {
+        const batch = writeBatch(db);
+        
+        if (req.type === 'DELETE_SALE') {
+            const sale = sales.find(s => s.id === req.payload.saleId);
+            if (sale) {
+                 batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', sale.id));
+                 if (sale.items) {
+                    sale.items.forEach(item => {
+                        const p = products.find(prod => prod.id === item.id);
+                        if (p) batch.update(doc(db, 'tiendas', STORE_ID, 'products', item.id), { stock: Number(p.stock) + Number(item.qty) });
+                    });
+                 }
+            }
+        } else if (req.type === 'PRODUCT_TRANSACTION') {
+            await handleProductTransaction(req.payload.productData, req.payload.financialData);
+        } else if (req.type === 'EDIT_PRODUCT') {
+            await handleProductTransaction(req.payload.productData, req.payload.financialData);
+        }
+
+        batch.delete(doc(db, 'tiendas', STORE_ID, 'notifications', req.id));
+        await batch.commit();
+        setShowNotifications(false);
+    } catch (e) { console.error(e); }
   };
 
   const handleDenyRequest = async (id) => {
@@ -338,8 +468,9 @@ export default function KioscoSystem() {
     const myOpenSales = sales.filter(s => s.user === appUser.name && s.status === 'open');
     const myOpenPayments = payments.filter(p => p.user === appUser.name && p.status === 'open');
     
-    if (myOpenSales.length === 0 && myOpenPayments.length === 0 && currentShiftData.initialChange === 0) {
-        alert("No hay movimientos para cerrar."); return;
+    if (myOpenSales.length === 0 && myOpenPayments.length === 0 && currentShiftData?.initialChange === 0) {
+        alert("No hay movimientos para cerrar.");
+        return;
     }
 
     const report = {
@@ -371,7 +502,19 @@ export default function KioscoSystem() {
   const navigateTo = (newView) => { setView(newView); setIsMenuOpen(false); };
 
   // --- RENDERIZADO CONDICIONAL ---
-  if (dbError) return <div className="min-h-screen flex items-center justify-center p-6"><Card className="w-full max-w-lg p-8 text-center border-red-100 shadow-xl"><Lock size={40} className="mx-auto text-red-600 mb-4"/><h1 className="text-xl font-bold mb-2">Base de Datos Bloqueada</h1><p>{dbError}</p><Button onClick={()=>window.location.reload()} className="mt-4 w-full">Reintentar</Button></Card></div>;
+  if (dbError) {
+      return (
+          <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+              <Card className="w-full max-w-lg p-8 text-center border-red-100 shadow-xl">
+                  <div className="bg-red-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600"><Lock size={40} /></div>
+                  <h1 className="text-2xl font-bold text-gray-800 mb-2">Base de Datos Bloqueada</h1>
+                  <p className="text-gray-600 mb-6">{dbError}</p>
+                  <Button onClick={() => window.location.reload()} className="w-full">Recargar Aplicación</Button>
+              </Card>
+          </div>
+      );
+  }
+
   if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-500">Iniciando sistema...</div>;
   if (printData) return <PrintableReport data={printData} onClose={() => { setPrintData(null); handleLogout(); }} />;
   if (restockData) return <RestockList data={restockData} onClose={() => setRestockData(null)} />;
@@ -382,27 +525,45 @@ export default function KioscoSystem() {
         {showShiftStartModal ? (
              <ShiftStartModal onStart={handleStartShift} username={appUser.name} onCancel={handleLogout} />
         ) : (
-            <Card className="w-full max-w-sm p-8 text-center shadow-xl">
-            <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-blue-200 shadow-lg"><Database size={32} /></div>
-            <h1 className="text-2xl font-bold text-gray-800 mb-1">Kiosco Pro</h1>
-            <p className="text-gray-400 text-sm mb-8">Acceso al Sistema</p>
-            <form onSubmit={handleLogin} className="space-y-4 text-left">
-                <div>
-                    <label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario</label>
-                    <div className="relative">
-                        <User className="absolute left-3 top-3 text-gray-400" size={18}/>
-                        <input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingresa tu usuario" />
+            <Card className="w-full max-w-sm p-8 text-center shadow-xl border border-gray-100">
+                <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-blue-200 shadow-lg"><Database size={32} /></div>
+                <h1 className="text-2xl font-bold text-gray-800 mb-1">Kiosco Pro</h1>
+                <p className="text-gray-400 text-sm mb-8">Gestión de Kiosco & Stock</p>
+                
+                <form onSubmit={isRegistering ? handleRegister : handleLogin} className="space-y-4 text-left">
+                    {isRegistering && (
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 uppercase ml-1">Nombre Completo</label>
+                            <div className="relative">
+                                <User className="absolute left-3 top-3 text-gray-400" size={18}/>
+                                <input type="text" value={registerName} onChange={e=>setRegisterName(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ej. Juan Pérez" required />
+                            </div>
+                        </div>
+                    )}
+                    <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario</label>
+                        <div className="relative">
+                            <User className="absolute left-3 top-3 text-gray-400" size={18}/>
+                            <input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingresa tu usuario" required />
+                        </div>
                     </div>
-                </div>
-                <div>
-                    <label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label>
-                    <div className="relative">
-                        <Key className="absolute left-3 top-3 text-gray-400" size={18}/>
-                        <input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
+                    <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label>
+                        <div className="relative">
+                            <Key className="absolute left-3 top-3 text-gray-400" size={18}/>
+                            <input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required />
+                        </div>
                     </div>
+                    
+                    <Button type="submit" className="w-full py-3 mt-2">{isRegistering ? 'Crear Cuenta' : 'Iniciar Sesión'}</Button>
+                </form>
+
+                <div className="mt-6 text-sm text-gray-500">
+                    {isRegistering ? "¿Ya tienes cuenta? " : "¿No tienes cuenta? "}
+                    <button onClick={() => setIsRegistering(!isRegistering)} className="text-blue-600 font-bold hover:underline">
+                        {isRegistering ? "Inicia Sesión" : "Regístrate"}
+                    </button>
                 </div>
-                <Button type="submit" className="w-full py-3 mt-2">Iniciar Sesión</Button>
-            </form>
             </Card>
         )}
       </div>
@@ -412,7 +573,7 @@ export default function KioscoSystem() {
   return (
     <div className="min-h-screen bg-gray-100 pb-20 md:pb-0 relative overflow-x-hidden">
       {/* Menu & Header */}
-      {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{appUser.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /></>}</nav><div className="mt-auto border-t pt-4"><button onClick={handleLogout} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Sesión</button></div></div></div>}
+      {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{appUser.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { setAppUser(null); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Turno</button></div></div></div>}
 
       <div className="bg-white shadow-sm p-4 sticky top-0 z-20 flex justify-between items-center">
         <div className="flex items-center gap-3"><button onClick={() => setIsMenuOpen(true)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600"><Menu size={24} /></button><h1 className="font-bold text-gray-800 text-lg">{view === 'pos' ? 'Punto de Venta' : view === 'products' ? 'Inventario' : view === 'shift' ? 'Caja' : 'Gestión'}</h1></div>
