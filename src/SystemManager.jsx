@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -22,10 +22,11 @@ import {
   deleteDoc, 
   doc, 
   onSnapshot, 
-  writeBatch
+  writeBatch,
+  query
 } from 'firebase/firestore';
 
-// --- CONFIGURACIÓN FIREBASE (Tus Credenciales) ---
+// --- CONFIGURACIÓN FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyDfniZVLGzatksiK1qBeO259XqpY46PbX0",
   authDomain: "kiosco-app-79b58.firebaseapp.com",
@@ -92,7 +93,6 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
 
-  // Estado de UI y Errores
   const [cart, setCart] = useState([]);
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
@@ -121,7 +121,7 @@ export default function KioscoSystem() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Sincronización de Datos (Con manejo de errores robusto)
+  // 2. Sincronización de Datos
   useEffect(() => {
     if (!firebaseUser) return;
 
@@ -137,7 +137,16 @@ export default function KioscoSystem() {
     };
 
     const unsubProducts = onSnapshot(getPath('products'), (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const data = snapshot.docs.map(doc => {
+          const d = doc.data();
+          // Aseguramos que stock y minStock sean números
+          return { 
+              id: doc.id, 
+              ...d, 
+              stock: Number(d.stock || 0), 
+              minStock: Number(d.minStock || 0) 
+          };
+      });
       setProducts(data);
     }, handleSnapshotError);
 
@@ -184,10 +193,12 @@ export default function KioscoSystem() {
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         const currentProd = products.find(p => p.id === productId);
         if (currentProd) {
+            // Lógica de suma pura: Stock Actual + Lo Nuevo
+            const newStock = Number(currentProd.stock) + Number(addedStock);
             batch.update(productRef, {
-                stock: (currentProd.stock || 0) + addedStock,
-                cost: productData.newCost,
-                price: productData.newPrice
+                stock: newStock,
+                cost: Number(productData.newCost),
+                price: Number(productData.newPrice)
             });
         }
       } else {
@@ -250,7 +261,9 @@ export default function KioscoSystem() {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
             const currentProd = products.find(p => p.id === item.id);
             if (currentProd) {
-                batch.update(prodRef, { stock: (currentProd.stock || 0) - item.qty });
+                // Resta pura: Stock Actual - Cantidad Vendida
+                const newStock = Number(currentProd.stock) - Number(item.qty);
+                batch.update(prodRef, { stock: newStock });
             }
         });
 
@@ -290,7 +303,7 @@ export default function KioscoSystem() {
                     const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
                     const currentProd = products.find(p => p.id === item.id);
                     if (currentProd) {
-                        batch.update(prodRef, { stock: (currentProd.stock || 0) + item.qty });
+                        batch.update(prodRef, { stock: Number(currentProd.stock) + Number(item.qty) });
                     }
                 });
             }
@@ -519,7 +532,6 @@ const SuppliersDebtsView = ({ debts }) => {
 
 const ShiftManager = ({ sales, payments, user, onCloseShift, onDeleteSale }) => {
   const [activeTab, setActiveTab] = useState('summary');
-  // Solo mostramos movimientos OPEN (no cerrados) para la caja actual
   const mySales = sales.filter(s => s.user === user.name && s.status === 'open');
   const myPayments = payments.filter(p => p.user === user.name && p.status === 'open');
   
@@ -575,7 +587,26 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
 
-    const productData = { isRestock: modalMode === 'RESTOCK', productId: editingId, addedStock, newCost, newPrice: sellingPrice, productName: formData.name, supplierName: formData.supplier, fullObject: { id: editingId || Date.now().toString(), name: formData.name, barcode: formData.barcode, stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, minStock: parseInt(formData.minStock) || 5, cost: newCost, price: sellingPrice, hasIva: formData.hasIva, margin: parseFloat(formData.margin) } };
+    const productData = { 
+        isRestock: modalMode === 'RESTOCK', 
+        productId: editingId, 
+        addedStock, 
+        newCost, 
+        newPrice: sellingPrice, // Asignamos sellingPrice a newPrice
+        productName: formData.name, 
+        supplierName: formData.supplier, 
+        fullObject: { 
+            id: editingId || Date.now().toString(), 
+            name: formData.name, 
+            barcode: formData.barcode, 
+            stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, 
+            minStock: parseInt(formData.minStock) || 5, 
+            cost: newCost, 
+            price: sellingPrice, 
+            hasIva: formData.hasIva, 
+            margin: parseFloat(formData.margin) 
+        } 
+    };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
 
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
