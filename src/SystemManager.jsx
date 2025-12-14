@@ -40,7 +40,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// ID del Kiosco para la base de datos (Esto organiza tus datos en Firebase)
+// ID del Kiosco para la base de datos
 const STORE_ID = 'mi-kiosco-principal';
 
 // --- Componentes UI Básicos ---
@@ -92,6 +92,7 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
 
+  // Estado de UI y Errores
   const [cart, setCart] = useState([]);
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
@@ -100,15 +101,16 @@ export default function KioscoSystem() {
   const [printData, setPrintData] = useState(null); 
   const [restockData, setRestockData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [dbError, setDbError] = useState(null); 
 
-  // 1. Autenticación (Anónima para facilitar el acceso rápido)
+  // 1. Autenticación
   useEffect(() => {
     const initAuth = async () => {
       try {
         await signInAnonymously(auth);
       } catch (error) {
         console.error("Auth error:", error);
-        alert("Error de conexión con Firebase. Revisa la consola.");
+        setDbError("No se pudo conectar con el servicio de autenticación.");
       }
     };
     initAuth();
@@ -119,50 +121,57 @@ export default function KioscoSystem() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Sincronización de Datos (Listeners en tiempo real)
+  // 2. Sincronización de Datos (Con manejo de errores robusto)
   useEffect(() => {
     if (!firebaseUser) return;
 
-    // Función auxiliar para obtener referencias a colecciones
-    // Estructura: tiendas / mi-kiosco-principal / [productos, ventas, etc.]
     const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
+    
+    const handleSnapshotError = (err) => {
+        console.error("Firestore Snapshot Error:", err);
+        if (err.code === 'permission-denied') {
+            setDbError("PERMISOS DENEGADOS: Ve a Firebase Console -> Firestore -> Reglas y configúralas a 'allow read, write: if true;'");
+        } else {
+            setDbError(`Error de base de datos: ${err.message}`);
+        }
+    };
 
     const unsubProducts = onSnapshot(getPath('products'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setProducts(data);
-    });
+    }, handleSnapshotError);
 
     const unsubSales = onSnapshot(getPath('sales'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setSales(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
-    });
+    }, handleSnapshotError);
 
     const unsubPayments = onSnapshot(getPath('payments'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setPayments(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
-    });
+    }, handleSnapshotError);
 
     const unsubDebts = onSnapshot(getPath('debts'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setDebts(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
-    });
+    }, handleSnapshotError);
 
     const unsubShifts = onSnapshot(getPath('shifts'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setClosedShifts(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
-    });
+    }, handleSnapshotError);
 
     const unsubNotifs = onSnapshot(getPath('notifications'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setNotifications(data.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)));
-    });
+    }, handleSnapshotError);
 
     return () => {
       unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs();
     };
   }, [firebaseUser]);
 
-  // --- ACTIONS (Escritura en Base de Datos) ---
+  // --- ACTIONS ---
 
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock, supplierName } = productData;
@@ -219,7 +228,7 @@ export default function KioscoSystem() {
       await batch.commit();
     } catch (e) {
       console.error("Error transaction:", e);
-      alert("Error al guardar en base de datos. Verifique su conexión.");
+      alert("Error al guardar: Verifique permisos de base de datos.");
     }
   };
 
@@ -249,7 +258,7 @@ export default function KioscoSystem() {
         setCart([]);
     } catch (e) {
         console.error("Error checkout:", e);
-        alert("Error al procesar la venta");
+        alert("Error al procesar la venta. Verifique conexión.");
     }
   };
 
@@ -357,6 +366,22 @@ export default function KioscoSystem() {
   };
 
   const navigateTo = (newView) => { setView(newView); setIsMenuOpen(false); };
+
+  // --- PANTALLA DE ERROR DE PERMISOS ---
+  if (dbError) {
+      return (
+          <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+              <Card className="w-full max-w-lg p-8 text-center border-red-100 shadow-xl">
+                  <div className="bg-red-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600">
+                      <Lock size={40} />
+                  </div>
+                  <h1 className="text-2xl font-bold text-gray-800 mb-2">Base de Datos Bloqueada</h1>
+                  <p className="text-gray-600 mb-6">{dbError}</p>
+                  <Button onClick={() => window.location.reload()} className="w-full">Ya actualicé las reglas, recargar</Button>
+              </Card>
+          </div>
+      );
+  }
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-500">Conectando con la nube...</div>;
 
@@ -550,7 +575,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
 
-    const productData = { isRestock: modalMode === 'RESTOCK', productId: editingId, addedStock, newCost, newPrice, productName: formData.name, supplierName: formData.supplier, fullObject: { id: editingId || Date.now().toString(), name: formData.name, barcode: formData.barcode, stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, minStock: parseInt(formData.minStock) || 5, cost: newCost, price: sellingPrice, hasIva: formData.hasIva, margin: parseFloat(formData.margin) } };
+    const productData = { isRestock: modalMode === 'RESTOCK', productId: editingId, addedStock, newCost, newPrice: sellingPrice, productName: formData.name, supplierName: formData.supplier, fullObject: { id: editingId || Date.now().toString(), name: formData.name, barcode: formData.barcode, stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, minStock: parseInt(formData.minStock) || 5, cost: newCost, price: sellingPrice, hasIva: formData.hasIva, margin: parseFloat(formData.margin) } };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
 
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
