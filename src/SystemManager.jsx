@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw, LogIn, PlayCircle
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -205,9 +205,6 @@ export default function KioscoSystem() {
         const emailToLogin = userDoc.email;
 
         await signInWithEmailAndPassword(auth, emailToLogin, loginPass); // Password real de auth
-        // El login con contraseña de usuario de la app no está soportado directamente por la API de cliente de Firebase Auth de esta manera simple sin un backend intermedio para mapear username->email de forma segura en auth, pero este flujo funciona asumiendo que el password de Firestore coincide o se usa para el auth.
-        // CORRECCIÓN: Para este demo, usaremos el password ingresado contra Firebase Auth.
-        // Nota: Si el password de Firestore es solo visual, fallará. Asumimos que al registrar se usó el mismo.
         
     } catch (error) {
         console.error("Login error:", error);
@@ -287,14 +284,16 @@ export default function KioscoSystem() {
       const batch = writeBatch(db);
       if (isRestock) {
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
+        // Usar set con merge para evitar errores "No document to update"
         const currentProd = products.find(p => p.id === productId);
-        if (currentProd) {
-            batch.update(productRef, {
-                stock: Number(currentProd.stock) + Number(addedStock),
-                cost: Number(productData.newCost),
-                price: Number(productData.newPrice)
-            });
-        }
+        const newStock = currentProd ? Number(currentProd.stock) + Number(addedStock) : Number(addedStock);
+        
+        batch.set(productRef, {
+            stock: newStock,
+            cost: Number(productData.newCost),
+            price: Number(productData.newPrice)
+        }, { merge: true });
+
       } else {
         const ref = productId ? doc(db, 'tiendas', STORE_ID, 'products', productId) : doc(collection(db, 'tiendas', STORE_ID, 'products'));
         batch.set(ref, productData.fullObject, { merge: true });
@@ -305,7 +304,7 @@ export default function KioscoSystem() {
           batch.set(ref, { date: new Date().toISOString(), amount: totalCost, supplier: productData.supplierName || 'General', note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial`, user: userData.name, status: paymentStatus==='PAID'?'open':'PENDING', ...(paymentStatus==='OWED' && {productName: productData.productName, qty: addedStock}) });
       }
       await batch.commit();
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { console.error(e); alert("Error: " + e.message); }
   };
 
   const handleCheckout = async (total, items, method) => {
@@ -316,7 +315,10 @@ export default function KioscoSystem() {
         items.forEach(item => {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
             const currentProd = products.find(p => p.id === item.id);
-            if (currentProd) batch.update(prodRef, { stock: Number(currentProd.stock) - Number(item.qty) });
+            if (currentProd) {
+                 // Usar set con merge para seguridad
+                 batch.set(prodRef, { stock: Number(currentProd.stock) - Number(item.qty) }, { merge: true });
+            }
         });
         await batch.commit();
         setCart([]);
@@ -327,15 +329,14 @@ export default function KioscoSystem() {
   const requestAuthorization = async (type, payload, description) => { try { await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), { type, payload, description, requester: userData.name, timestamp: new Date().toISOString(), status: 'pending' }); alert("⛔ Solicitud enviada."); } catch (e) { console.error(e); } };
   const handleDeleteProduct = async (prodId) => { if (userData.role !== 'admin') return alert("Solo admin"); if (window.confirm("¿Borrar producto?")) { await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); } };
   const handleDeleteSale = async (saleId, items) => { if (userData.role === 'admin') { if(window.confirm('¿Anular venta?')) executeDeleteSale(saleId, items); } else requestAuthorization('DELETE_SALE', { saleId }, `Solicita anular venta`); };
-  const executeDeleteSale = async (saleId, items) => { const batch = writeBatch(db); batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', saleId)); if (items) items.forEach(item => { const p = products.find(prod => prod.id === item.id); if (p) batch.update(doc(db, 'tiendas', STORE_ID, 'products', item.id), { stock: Number(p.stock) + Number(item.qty) }); }); await batch.commit(); };
+  const executeDeleteSale = async (saleId, items) => { const batch = writeBatch(db); batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', saleId)); if (items) items.forEach(item => { const p = products.find(prod => prod.id === item.id); if (p) batch.set(doc(db, 'tiendas', STORE_ID, 'products', item.id), { stock: Number(p.stock) + Number(item.qty) }, { merge: true }); }); await batch.commit(); };
   const handleApproveRequest = async (req) => { if (req.type === 'DELETE_SALE') { const sale = sales.find(s => s.id === req.payload.saleId); if (sale) executeDeleteSale(sale.id, sale.items); } else if (req.type === 'PRODUCT_TRANSACTION' || req.type === 'EDIT_PRODUCT') await handleProductTransaction(req.payload.productData, req.payload.financialData); await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id)); setShowNotifications(false); };
   const handleDenyRequest = async (id) => await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', id));
 
   const closeShift = async () => {
     const myOpenSales = sales.filter(s => s.user === userData.name && s.status === 'open');
     const myOpenPayments = payments.filter(p => p.user === userData.name && p.status === 'open');
-    // Si no hay caja abierta, y no hay movimientos, avisar
-    if (!currentShiftData && myOpenSales.length === 0) return alert("No hay caja abierta para cerrar.");
+    if (myOpenSales.length === 0 && myOpenPayments.length === 0 && currentShiftData?.initialChange === 0) return alert("Sin movimientos.");
 
     const report = {
       date: new Date().toISOString(), cashier: userData.name, initialData: currentShiftData || {initialChange:0, supplierFund:0}, sales: myOpenSales, payments: myOpenPayments,
@@ -368,7 +369,6 @@ export default function KioscoSystem() {
   if (restockData) return <RestockList data={restockData} onClose={() => setRestockData(null)} />;
 
   if (!userData || showShiftStartModal) {
-    // Si estamos logueados pero necesitamos abrir caja
     if (userData && showShiftStartModal) {
         return (
             <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -376,7 +376,6 @@ export default function KioscoSystem() {
             </div>
         );
     }
-    // Pantalla Login
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
         <Card className="w-full max-w-sm p-8 text-center shadow-xl border border-gray-100">
@@ -404,6 +403,7 @@ export default function KioscoSystem() {
 
   return (
     <div className="min-h-screen bg-gray-100 pb-20 md:pb-0 relative overflow-x-hidden">
+      {/* Menu & Header */}
       {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{userData.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /><button onClick={handleFactoryReset} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors text-red-600 hover:bg-red-50 mt-4"><RefreshCw size={20} />Restablecer de Fábrica</button></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { handleLogout(); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Sesión</button></div></div></div>}
 
       <div className="bg-white shadow-sm p-4 sticky top-0 z-20 flex justify-between items-center">
@@ -674,4 +674,4 @@ const StatsView = ({ sales }) => {
 const HistoryView = ({ closedShifts, setPrintData }) => <div className="space-y-2 pb-20"><h2 className="font-bold mb-4">Cajas Cerradas</h2>{closedShifts.map(s => <Card key={s.id} className="p-4 flex justify-between"><div><div className="font-bold text-gray-800">{new Date(s.date).toLocaleDateString()}</div><div className="text-xs text-gray-500">{s.cashier}</div></div><div className="text-right"><div className="font-bold text-green-600">${s.totals.revenue}</div><Button onClick={()=>setPrintData(s)} className="text-xs py-1 px-2 h-auto mt-1">Ver PDF</Button></div></Card>)}</div>;
 const SupplierPaymentModal = ({ onClose, onSave }) => { const [a, setA] = useState(''); const [s, setS] = useState(''); const [n, setN] = useState(''); return <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded w-full max-w-sm space-y-4"><h3 className="font-bold">Pago Proveedor</h3><input placeholder="Monto" type="number" className="w-full border p-2 rounded" onChange={e=>setA(e.target.value)}/><input placeholder="Proveedor" className="w-full border p-2 rounded" onChange={e=>setS(e.target.value)}/><input placeholder="Nota" className="w-full border p-2 rounded" onChange={e=>setN(e.target.value)}/><div className="flex gap-2"><Button onClick={onClose} variant="secondary" className="flex-1">Cancelar</Button><Button onClick={()=>onSave(a,s,n)} variant="danger" className="flex-1">Registrar</Button></div></div></div> };
 const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data.totals, null, 2)}</pre></div> };
-const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold text-red-600">Stock: {p.stock}</span></li>)}</ul></div> };
+const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold">Stock: {p.stock}</span></li>)}</ul></div> };
