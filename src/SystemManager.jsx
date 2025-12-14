@@ -11,7 +11,9 @@ import {
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInAnonymously, 
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
   onAuthStateChanged
 } from 'firebase/auth';
 import { 
@@ -24,10 +26,7 @@ import {
   onSnapshot, 
   writeBatch,
   getDoc,
-  setDoc,
-  getDocs,
-  query,
-  where
+  setDoc
 } from 'firebase/firestore';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -79,8 +78,8 @@ const Button = ({ onClick, children, variant = "primary", className = "", icon: 
 // --- App Principal ---
 
 export default function KioscoSystem() {
-  const [firebaseUser, setFirebaseUser] = useState(null); 
-  const [appUser, setAppUser] = useState(null); 
+  const [user, setUser] = useState(null); // Usuario autenticado de Firebase
+  const [userData, setUserData] = useState(null); // Datos del usuario (Rol, Nombre) desde Firestore
   const [view, setView] = useState('login'); 
   
   // Estados de Datos
@@ -91,8 +90,7 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
   
-  // Estado de Turno Actual
-  const [currentShiftData, setCurrentShiftData] = useState(null); // { initialChange: 0, supplierFund: 0 }
+  const [currentShiftData, setCurrentShiftData] = useState(null);
 
   // UI
   const [cart, setCart] = useState([]);
@@ -107,37 +105,54 @@ export default function KioscoSystem() {
   
   // Login & Register Inputs
   const [isRegistering, setIsRegistering] = useState(false);
-  const [loginUser, setLoginUser] = useState('');
-  const [loginPass, setLoginPass] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [registerName, setRegisterName] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Limpieza de Caché Local al Iniciar
+  // 1. Monitor de Autenticación
   useEffect(() => {
-    localStorage.clear(); // Limpiar residuos viejos para evitar conflictos
-  }, []);
-
-  // 2. Autenticación Firebase
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (error) {
-        console.error("Auth error:", error);
-        setDbError("No se pudo conectar con el servicio de autenticación.");
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setLoading(true);
+      if (firebaseUser) {
+        setUser(firebaseUser);
+        // Buscar datos extra del usuario (rol) en Firestore
+        try {
+            const docRef = doc(db, 'tiendas', STORE_ID, 'users', firebaseUser.uid);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                setUserData({ uid: firebaseUser.uid, ...data });
+                if (data.role === 'admin') {
+                    setView('pos');
+                    setCurrentShiftData({ initialChange: 0, supplierFund: 0 }); // Admin salta apertura
+                } else {
+                    setShowShiftStartModal(true);
+                }
+            } else {
+                // Si el usuario existe en Auth pero no en DB (raro), lo creamos como user
+                const newData = { name: firebaseUser.email.split('@')[0], role: 'user', email: firebaseUser.email };
+                await setDoc(docRef, newData);
+                setUserData({ uid: firebaseUser.uid, ...newData });
+                setShowShiftStartModal(true);
+            }
+        } catch (e) {
+            console.error("Error fetching user data:", e);
+            setDbError("Error al cargar perfil de usuario.");
+        }
+      } else {
+        setUser(null);
+        setUserData(null);
+        setView('login');
       }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setFirebaseUser(u);
-      if (u) setLoading(false);
+      setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // 3. Sincronización de Datos
+  // 2. Sincronización de Datos (Snapshot Listeners)
   useEffect(() => {
-    if (!firebaseUser) return;
+    if (!user) return;
 
     const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
     
@@ -145,8 +160,6 @@ export default function KioscoSystem() {
         console.error("Firestore Snapshot Error:", err);
         if (err.code === 'permission-denied') {
             setDbError("PERMISOS DENEGADOS: Ve a Firebase Console -> Firestore -> Reglas y configúralas a 'allow read, write: if true;'");
-        } else {
-            // Ignoramos errores menores de desconexión
         }
     };
 
@@ -193,68 +206,41 @@ export default function KioscoSystem() {
     return () => {
       unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs();
     };
-  }, [firebaseUser]);
+  }, [user]);
 
-  // --- LOGIC: LOGIN & REGISTER ---
+  // --- LOGIC: LOGIN & REGISTER (FIREBASE AUTH) ---
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (!loginUser || !loginPass) return alert("Complete todos los campos");
-
+    if (!email || !password) return alert("Complete todos los campos");
     try {
-        const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
-        const q = query(usersRef, where("username", "==", loginUser), where("password", "==", loginPass));
-        const querySnapshot = await getDocs(q);
-
-        if (!querySnapshot.empty) {
-            const userData = querySnapshot.docs[0].data();
-            const userWithId = { id: querySnapshot.docs[0].id, ...userData };
-            
-            setAppUser(userWithId);
-            setLoginUser('');
-            setLoginPass('');
-            
-            if (userWithId.role !== 'admin') {
-                setShowShiftStartModal(true);
-            } else {
-                setView('pos');
-                setCurrentShiftData({ initialChange: 0, supplierFund: 0 });
-            }
-        } else {
-            alert("Usuario o contraseña incorrectos");
-        }
+        await signInWithEmailAndPassword(auth, email, password);
+        // El useEffect de onAuthStateChanged manejará el resto
     } catch (error) {
         console.error("Login error:", error);
-        alert("Error al iniciar sesión: " + error.message);
+        alert("Error: " + error.message);
     }
   };
 
   const handleRegister = async (e) => {
       e.preventDefault();
-      if (!loginUser || !loginPass || !registerName) return alert("Complete todos los campos");
+      if (!email || !password || !registerName) return alert("Complete todos los campos");
 
       try {
-          const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
-          const q = query(usersRef, where("username", "==", loginUser));
-          const querySnapshot = await getDocs(q);
+          // 1. Crear usuario en Firebase Auth
+          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+          const newUser = userCredential.user;
 
-          if (!querySnapshot.empty) {
-              alert("El nombre de usuario ya está en uso.");
-              return;
-          }
-
-          await addDoc(usersRef, {
-              username: loginUser,
-              password: loginPass, 
+          // 2. Crear documento de usuario en Firestore con rol 'user'
+          await setDoc(doc(db, 'tiendas', STORE_ID, 'users', newUser.uid), {
               name: registerName,
-              role: 'user', 
+              email: email,
+              role: 'user', // Por defecto cajero
               createdAt: new Date().toISOString()
           });
 
-          alert("Usuario registrado con éxito. Ahora puede iniciar sesión.");
-          setIsRegistering(false);
-          setRegisterName('');
-          setLoginPass('');
+          alert("Usuario registrado con éxito.");
+          // No necesitamos hacer nada más, el listener de Auth detectará el login automático post-registro
       } catch (error) {
           console.error("Register error:", error);
           alert("Error al registrar: " + error.message);
@@ -267,10 +253,15 @@ export default function KioscoSystem() {
     setView('pos');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOut(auth);
     setAppUser(null);
     setCurrentShiftData(null);
     setView('login');
+  };
+
+  const handleReloadData = () => {
+      window.location.reload();
   };
 
   // --- ACTIONS (DB) ---
@@ -287,18 +278,16 @@ export default function KioscoSystem() {
             batch.set(ref, p);
         });
         await batch.commit();
-        alert("Productos de ejemplo cargados. Ya puedes vender.");
+        alert("Productos de ejemplo cargados.");
     } catch (e) {
-        console.error(e);
         alert("Error al cargar ejemplos: " + e.message);
     }
   };
 
   // --- FUNCIÓN DE RESET DE FÁBRICA (LIMPIEZA TOTAL) ---
   const handleFactoryReset = async () => {
-      if (!window.confirm("⚠️ ATENCIÓN CRÍTICA ⚠️\n\n¿Estás seguro de que quieres BORRAR TODOS LOS DATOS?\n\nSe eliminarán:\n- Todos los productos\n- Todas las ventas\n- Historial de caja\n- Deudas\n\nLos USUARIOS NO se borrarán.")) return;
-      if (!window.confirm("¿Confirmas la operación? Esto no se puede deshacer.")) return;
-
+      if (!window.confirm("⚠️ ¿Estás seguro de BORRAR TODOS LOS DATOS de productos y ventas? Los usuarios NO se borrarán.")) return;
+      
       setLoading(true);
       try {
           const clearColl = async (colName) => {
@@ -317,20 +306,16 @@ export default function KioscoSystem() {
           await clearColl('notifications');
 
           alert("Sistema reiniciado a 0 correctamente.");
-          setProducts([]);
-          setSales([]);
-          setPayments([]);
-          setDebts([]);
       } catch (e) {
-          console.error(e);
           alert("Error al resetear: " + e.message);
       } finally {
           setLoading(false);
       }
   };
 
+  // ... (Resto de funciones de transacciones: handleProductTransaction, handleCheckout, etc. se mantienen igual pero usando userData.name) ...
   const handleProductTransaction = async (productData, financialData) => {
-    const { isRestock, productId, addedStock, supplierName } = productData;
+    const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
 
     try {
@@ -366,9 +351,9 @@ export default function KioscoSystem() {
             batch.set(paymentRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
-                supplier: supplierName || 'Proveedor General',
+                supplier: productData.supplierName || 'General',
                 note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial: ${productData.productName}`,
-                user: appUser.name,
+                user: userData.name,
                 status: 'open' 
             });
         } else {
@@ -376,10 +361,10 @@ export default function KioscoSystem() {
             batch.set(debtRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
-                supplier: supplierName || 'Sin Proveedor',
+                supplier: productData.supplierName || 'Sin Proveedor',
                 productName: productData.productName,
                 qty: addedStock,
-                user: appUser.name,
+                user: userData.name,
                 status: 'PENDING'
             });
         }
@@ -398,10 +383,8 @@ export default function KioscoSystem() {
         const saleRef = doc(collection(db, 'tiendas', STORE_ID, 'sales'));
         batch.set(saleRef, {
             date: new Date().toISOString(),
-            total,
-            items,
-            method,
-            user: appUser.name,
+            total, items, method,
+            user: userData.name,
             status: 'open'
         });
 
@@ -427,7 +410,7 @@ export default function KioscoSystem() {
     try {
         await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), {
             type, payload, description,
-            requester: appUser.name,
+            requester: userData.name,
             timestamp: new Date().toISOString(),
             status: 'pending'
         });
@@ -436,7 +419,7 @@ export default function KioscoSystem() {
   };
 
   const handleDeleteProduct = async (prodId) => {
-      if (appUser.role !== 'admin') {
+      if (userData.role !== 'admin') {
           alert("Solo el dueño puede eliminar productos.");
           return;
       }
@@ -448,7 +431,7 @@ export default function KioscoSystem() {
   };
 
   const handleDeleteSale = async (saleId, items) => {
-      if (appUser.role === 'admin') {
+      if (userData.role === 'admin') {
         if(window.confirm('¿Eliminar esta venta y devolver stock?')) {
             executeDeleteSale(saleId, items);
         }
@@ -503,8 +486,8 @@ export default function KioscoSystem() {
   };
 
   const closeShift = async () => {
-    const myOpenSales = sales.filter(s => s.user === appUser.name && s.status === 'open');
-    const myOpenPayments = payments.filter(p => p.user === appUser.name && p.status === 'open');
+    const myOpenSales = sales.filter(s => s.user === userData.name && s.status === 'open');
+    const myOpenPayments = payments.filter(p => p.user === userData.name && p.status === 'open');
     
     if (myOpenSales.length === 0 && myOpenPayments.length === 0 && currentShiftData?.initialChange === 0) {
         alert("No hay movimientos para cerrar.");
@@ -513,7 +496,7 @@ export default function KioscoSystem() {
 
     const report = {
       date: new Date().toISOString(),
-      cashier: appUser.name,
+      cashier: userData.name,
       initialData: currentShiftData,
       sales: myOpenSales, 
       payments: myOpenPayments,
@@ -557,11 +540,11 @@ export default function KioscoSystem() {
   if (printData) return <PrintableReport data={printData} onClose={() => { setPrintData(null); handleLogout(); }} />;
   if (restockData) return <RestockList data={restockData} onClose={() => setRestockData(null)} />;
 
-  if (!appUser || showShiftStartModal) {
+  if (!userData || showShiftStartModal) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        {showShiftStartModal ? (
-             <ShiftStartModal onStart={handleStartShift} username={appUser.name} onCancel={handleLogout} />
+        {showShiftStartModal && userData ? (
+             <ShiftStartModal onStart={handleStartShift} username={userData.name} onCancel={handleLogout} />
         ) : (
             <Card className="w-full max-w-sm p-8 text-center shadow-xl border border-gray-100">
                 <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-blue-200 shadow-lg"><Database size={32} /></div>
@@ -579,17 +562,17 @@ export default function KioscoSystem() {
                         </div>
                     )}
                     <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario</label>
+                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Correo Electrónico</label>
                         <div className="relative">
                             <User className="absolute left-3 top-3 text-gray-400" size={18}/>
-                            <input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingresa tu usuario" required />
+                            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="usuario@kiosco.com" required />
                         </div>
                     </div>
                     <div>
                         <label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label>
                         <div className="relative">
                             <Key className="absolute left-3 top-3 text-gray-400" size={18}/>
-                            <input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required />
+                            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required />
                         </div>
                     </div>
                     
@@ -611,32 +594,32 @@ export default function KioscoSystem() {
   return (
     <div className="min-h-screen bg-gray-100 pb-20 md:pb-0 relative overflow-x-hidden">
       {/* Menu & Header */}
-      {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{appUser.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /><button onClick={handleFactoryReset} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors text-red-600 hover:bg-red-50 mt-4"><RefreshCw size={20} />Restablecer de Fábrica</button></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { setAppUser(null); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Turno</button></div></div></div>}
+      {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{userData.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /><button onClick={handleFactoryReset} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors text-red-600 hover:bg-red-50 mt-4"><RefreshCw size={20} />Restablecer de Fábrica</button></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { handleLogout(); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Turno</button></div></div></div>}
 
       <div className="bg-white shadow-sm p-4 sticky top-0 z-20 flex justify-between items-center">
         <div className="flex items-center gap-3"><button onClick={() => setIsMenuOpen(true)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600"><Menu size={24} /></button><h1 className="font-bold text-gray-800 text-lg">{view === 'pos' ? 'Punto de Venta' : view === 'products' ? 'Inventario' : view === 'shift' ? 'Caja' : 'Gestión'}</h1></div>
         <div className="flex items-center gap-3">
-          {appUser.role === 'admin' && (
+          <button onClick={handleReloadData} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full"><RefreshCw size={18}/></button>
+          {userData.role === 'admin' && (
              <div className="relative"><button onClick={() => setShowNotifications(!showNotifications)} className="p-2 rounded-full hover:bg-gray-100 relative"><Bell size={20} className={notifications.length > 0 ? "text-blue-600" : "text-gray-400"} />{notifications.length > 0 && <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>}</button>
                {showNotifications && (
                  <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl shadow-2xl border border-gray-100 z-50 overflow-hidden animate-in fade-in"><div className="bg-gray-50 p-3 border-b text-sm font-bold text-gray-700">Solicitudes</div><div className="max-h-64 overflow-y-auto">{notifications.length === 0 ? <div className="p-4 text-center text-gray-400 text-sm">Sin novedades</div> : notifications.map(req => (<div key={req.id} className="p-3 border-b hover:bg-gray-50"><div className="flex items-center gap-2 mb-1"><ShieldAlert size={14} className="text-orange-500" /><span className="font-bold text-sm text-gray-800">{req.requester}</span></div><p className="text-xs text-gray-600 mb-2">{req.description}</p><div className="flex gap-2"><button onClick={() => handleApproveRequest(req)} className="flex-1 bg-green-100 text-green-700 text-xs py-1 rounded">Aprobar</button><button onClick={() => handleDenyRequest(req.id)} className="flex-1 bg-red-100 text-red-700 text-xs py-1 rounded">Rechazar</button></div></div>))}</div></div>
                )}
              </div>
           )}
-          <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-xs font-bold">{appUser.name.split(' ')[0]}</div>
+          <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-xs font-bold">{userData.name.split(' ')[0]}</div>
         </div>
       </div>
 
       <div className="max-w-4xl mx-auto p-4">
         {view === 'pos' && <POSView products={products} cart={cart} setCart={setCart} onCheckout={handleCheckout} onSeed={seedDatabase} />}
-        {view === 'products' && <ProductManager products={products} user={appUser} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock); if(list.length) setRestockData(list); else alert("Stock OK"); }} onProductTransaction={handleProductTransaction} onDeleteProduct={handleDeleteProduct} />}
-        {view === 'shift' && <ShiftManager sales={sales} payments={payments} user={appUser} shiftData={currentShiftData} onCloseShift={closeShift} onDeleteSale={handleDeleteSale} />}
+        {view === 'products' && <ProductManager products={products} user={userData} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock); if(list.length) setRestockData(list); else alert("Stock OK"); }} onProductTransaction={handleProductTransaction} onDeleteProduct={handleDeleteProduct} />}
+        {view === 'shift' && <ShiftManager sales={sales} payments={payments} user={userData} shiftData={currentShiftData} onCloseShift={closeShift} onDeleteSale={handleDeleteSale} />}
         {view === 'stats' && <StatsView sales={closedShifts.flatMap(s => s.sales).concat(sales)} />}
         {view === 'history' && <HistoryView closedShifts={closedShifts} setPrintData={setPrintData} />}
         {view === 'debts' && <SuppliersDebtsView debts={debts} />}
       </div>
 
-      {/* Floating Buttons */}
       {(view === 'pos' || view === 'products') && (
         <div className="fixed bottom-24 right-4 z-30">
           {showQuickActions && (
@@ -718,8 +701,6 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   const totalSales = mySales.reduce((acc, curr) => acc + curr.total, 0);
   const totalPayments = myPayments.reduce((acc, curr) => acc + curr.amount, 0);
   
-  // Caja Teórica = Inicial + Ventas Efectivo - Pagos Efectivo/Salidas
-  // (Simplificado: Asumimos que los pagos siempre salen de la caja de efectivo)
   const cashSales = mySales.filter(s => s.method === 'Efectivo').reduce((acc, c) => acc + c.total, 0);
   const cardSales = mySales.filter(s => s.method === 'Tarjeta').reduce((acc, c) => acc + c.total, 0);
   const transfSales = mySales.filter(s => s.method === 'Transferencia').reduce((acc, c) => acc + c.total, 0);
