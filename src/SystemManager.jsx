@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -112,7 +112,12 @@ export default function KioscoSystem() {
   const [registerName, setRegisterName] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Autenticación Firebase (Anónima para conexión técnica, lógica propia para usuarios)
+  // 1. Limpieza de Caché Local al Iniciar
+  useEffect(() => {
+    localStorage.clear(); // Limpiar residuos viejos para evitar conflictos
+  }, []);
+
+  // 2. Autenticación Firebase
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -130,7 +135,7 @@ export default function KioscoSystem() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Sincronización de Datos
+  // 3. Sincronización de Datos
   useEffect(() => {
     if (!firebaseUser) return;
 
@@ -229,7 +234,6 @@ export default function KioscoSystem() {
       if (!loginUser || !loginPass || !registerName) return alert("Complete todos los campos");
 
       try {
-          // Verificar si ya existe
           const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
           const q = query(usersRef, where("username", "==", loginUser));
           const querySnapshot = await getDocs(q);
@@ -239,19 +243,18 @@ export default function KioscoSystem() {
               return;
           }
 
-          // Crear usuario con rol 'user' por defecto
           await addDoc(usersRef, {
               username: loginUser,
-              password: loginPass, // Nota: En producción esto debería estar encriptado
+              password: loginPass, 
               name: registerName,
-              role: 'user', // Rol por defecto, Admin se cambia en DB
+              role: 'user', 
               createdAt: new Date().toISOString()
           });
 
           alert("Usuario registrado con éxito. Ahora puede iniciar sesión.");
           setIsRegistering(false);
           setRegisterName('');
-          setLoginPass(''); // Limpiar pass pero dejar user para facilitar login
+          setLoginPass('');
       } catch (error) {
           console.error("Register error:", error);
           alert("Error al registrar: " + error.message);
@@ -289,6 +292,41 @@ export default function KioscoSystem() {
         console.error(e);
         alert("Error al cargar ejemplos: " + e.message);
     }
+  };
+
+  // --- FUNCIÓN DE RESET DE FÁBRICA (LIMPIEZA TOTAL) ---
+  const handleFactoryReset = async () => {
+      if (!window.confirm("⚠️ ATENCIÓN CRÍTICA ⚠️\n\n¿Estás seguro de que quieres BORRAR TODOS LOS DATOS?\n\nSe eliminarán:\n- Todos los productos\n- Todas las ventas\n- Historial de caja\n- Deudas\n\nLos USUARIOS NO se borrarán.")) return;
+      if (!window.confirm("¿Confirmas la operación? Esto no se puede deshacer.")) return;
+
+      setLoading(true);
+      try {
+          const clearColl = async (colName) => {
+              const q = query(collection(db, 'tiendas', STORE_ID, colName));
+              const snap = await getDocs(q);
+              const batch = writeBatch(db);
+              snap.docs.forEach(d => batch.delete(d.ref));
+              await batch.commit();
+          };
+
+          await clearColl('products');
+          await clearColl('sales');
+          await clearColl('payments');
+          await clearColl('debts');
+          await clearColl('shifts');
+          await clearColl('notifications');
+
+          alert("Sistema reiniciado a 0 correctamente.");
+          setProducts([]);
+          setSales([]);
+          setPayments([]);
+          setDebts([]);
+      } catch (e) {
+          console.error(e);
+          alert("Error al resetear: " + e.message);
+      } finally {
+          setLoading(false);
+      }
   };
 
   const handleProductTransaction = async (productData, financialData) => {
@@ -573,7 +611,7 @@ export default function KioscoSystem() {
   return (
     <div className="min-h-screen bg-gray-100 pb-20 md:pb-0 relative overflow-x-hidden">
       {/* Menu & Header */}
-      {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{appUser.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { setAppUser(null); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Turno</button></div></div></div>}
+      {isMenuOpen && <div className="fixed inset-0 z-50 flex animate-in"><div className="bg-black/50 absolute inset-0 backdrop-blur-sm" onClick={() => setIsMenuOpen(false)} /><div className="bg-white w-72 h-full relative z-10 shadow-2xl p-6 flex flex-col"><div className="flex items-center gap-3 mb-8 pb-4 border-b"><div className="bg-blue-600 text-white p-2 rounded-lg"><DollarSign size={20} /></div><div><h2 className="font-bold text-xl">Kiosco</h2><p className="text-xs text-gray-500">Cloud System</p></div></div><nav className="flex-1 space-y-2"><MenuLink icon={ShoppingCart} label="Punto de Venta" active={view === 'pos'} onClick={() => navigateTo('pos')} /><MenuLink icon={Package} label="Productos / Stock" active={view === 'products'} onClick={() => navigateTo('products')} /><MenuLink icon={FileText} label="Cierre de Caja" active={view === 'shift'} onClick={() => navigateTo('shift')} /><MenuLink icon={BarChart2} label="Estadísticas" active={view === 'stats'} onClick={() => navigateTo('stats')} />{appUser.role === 'admin' && <><div className="my-4 border-t pt-4 text-xs font-bold text-gray-400 uppercase">Admin</div><MenuLink icon={Briefcase} label="Deudas Proveedores" active={view === 'debts'} onClick={() => navigateTo('debts')} /><MenuLink icon={History} label="Historial Cajas" active={view === 'history'} onClick={() => navigateTo('history')} /><button onClick={handleFactoryReset} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors text-red-600 hover:bg-red-50 mt-4"><RefreshCw size={20} />Restablecer de Fábrica</button></>}</nav><div className="mt-auto border-t pt-4"><button onClick={() => { setAppUser(null); setIsMenuOpen(false); }} className="w-full py-2 text-red-500 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100">Cerrar Turno</button></div></div></div>}
 
       <div className="bg-white shadow-sm p-4 sticky top-0 z-20 flex justify-between items-center">
         <div className="flex items-center gap-3"><button onClick={() => setIsMenuOpen(true)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600"><Menu size={24} /></button><h1 className="font-bold text-gray-800 text-lg">{view === 'pos' ? 'Punto de Venta' : view === 'products' ? 'Inventario' : view === 'shift' ? 'Caja' : 'Gestión'}</h1></div>
@@ -831,5 +869,5 @@ const StatsView = ({ sales }) => {
 
 const HistoryView = ({ closedShifts, setPrintData }) => <div className="space-y-2 pb-20"><h2 className="font-bold mb-4">Cajas Cerradas</h2>{closedShifts.map(s => <Card key={s.id} className="p-4 flex justify-between"><div><div className="font-bold text-gray-800">{new Date(s.date).toLocaleDateString()}</div><div className="text-xs text-gray-500">{s.cashier}</div></div><div className="text-right"><div className="font-bold text-green-600">${s.totals.revenue}</div><Button onClick={()=>setPrintData(s)} className="text-xs py-1 px-2 h-auto mt-1">Ver PDF</Button></div></Card>)}</div>;
 const SupplierPaymentModal = ({ onClose, onSave }) => { const [a, setA] = useState(''); const [s, setS] = useState(''); const [n, setN] = useState(''); return <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded w-full max-w-sm space-y-4"><h3 className="font-bold">Pago Proveedor</h3><input placeholder="Monto" type="number" className="w-full border p-2 rounded" onChange={e=>setA(e.target.value)}/><input placeholder="Proveedor" className="w-full border p-2 rounded" onChange={e=>setS(e.target.value)}/><input placeholder="Nota" className="w-full border p-2 rounded" onChange={e=>setN(e.target.value)}/><div className="flex gap-2"><Button onClick={onClose} variant="secondary" className="flex-1">Cancelar</Button><Button onClick={()=>onSave(a,s,n)} variant="danger" className="flex-1">Registrar</Button></div></div></div> };
-const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data, null, 2)}</pre></div> };
+const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data.totals, null, 2)}</pre></div> };
 const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold text-red-600">Stock: {p.stock}</span></li>)}</ul></div> };
