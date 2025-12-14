@@ -48,6 +48,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// ID del Kiosco para la base de datos
 const STORE_ID = 'mi-kiosco-principal';
 
 // --- Componentes UI Básicos ---
@@ -93,8 +94,11 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
   
-  // Estado de Turno Actual
-  const [currentShiftData, setCurrentShiftData] = useState(null); 
+  // Estado de Turno Actual (Ahora persistente en localStorage)
+  const [currentShiftData, setCurrentShiftData] = useState(() => {
+    const saved = localStorage.getItem('kiosco_shift_data');
+    return saved ? JSON.parse(saved) : null;
+  });
 
   // UI
   const [cart, setCart] = useState([]);
@@ -107,23 +111,17 @@ export default function KioscoSystem() {
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null); 
   
-  // Login Inputs
+  // Login & Register Inputs
   const [isRegistering, setIsRegistering] = useState(false);
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
-  
-  // Register Inputs
-  const [regName, setRegName] = useState('');
-  const [regUsername, setRegUsername] = useState('');
-  const [regEmail, setRegEmail] = useState('');
-  const [regPass, setRegPass] = useState('');
-  
+  const [registerName, setRegisterName] = useState('');
+  const [registerUsername, setRegisterUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Limpieza de Caché
-  useEffect(() => { localStorage.clear(); }, []);
-
-  // 2. Monitor de Autenticación
+  // 1. Monitor de Autenticación
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
@@ -135,11 +133,16 @@ export default function KioscoSystem() {
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 setUserData({ uid: firebaseUser.uid, ...data });
+                // LÓGICA DE INICIO
                 if (data.role === 'admin') {
                     setView('pos');
-                    setCurrentShiftData(null); 
                 } else {
-                    setShowShiftStartModal(true); 
+                    // Si es cajero y NO tiene turno abierto en memoria, mostrar modal
+                    if (!currentShiftData) {
+                        setShowShiftStartModal(true);
+                    } else {
+                        setView('pos');
+                    }
                 }
             } else {
                 const safeName = firebaseUser.email ? firebaseUser.email.split('@')[0] : "Usuario";
@@ -150,7 +153,7 @@ export default function KioscoSystem() {
             }
         } catch (e) {
             console.error("Error fetching user data:", e);
-            if (e.code === 'permission-denied') setDbError("PERMISOS DENEGADOS: Configure las reglas en Firebase Console.");
+            if (e.code === 'permission-denied') setDbError("PERMISOS DENEGADOS: Configura las reglas en Firebase.");
         }
       } else {
         setFirebaseUser(null);
@@ -160,7 +163,16 @@ export default function KioscoSystem() {
       setLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [currentShiftData]); // Dependencia agregada para revaluar si cambia turno
+
+  // 2. Persistencia de Shift Data
+  useEffect(() => {
+      if (currentShiftData) {
+          localStorage.setItem('kiosco_shift_data', JSON.stringify(currentShiftData));
+      } else {
+          localStorage.removeItem('kiosco_shift_data');
+      }
+  }, [currentShiftData]);
 
   // 3. Sincronización de Datos
   useEffect(() => {
@@ -178,11 +190,11 @@ export default function KioscoSystem() {
     return () => { unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs(); };
   }, [firebaseUser]);
 
-  // --- ACTIONS: LOGIN & REGISTER (FORMS SEPARADOS) ---
+  // --- LOGIC: LOGIN & REGISTER ---
+
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (!loginUser) return alert("Falta ingresar el Usuario");
-    if (!loginPass) return alert("Falta ingresar la Contraseña");
+    if (!loginUser || !loginPass) return alert("Complete todos los campos");
 
     try {
         setLoading(true);
@@ -228,13 +240,14 @@ export default function KioscoSystem() {
   };
 
   const handleStartShift = (data) => { setCurrentShiftData(data); setShowShiftStartModal(false); setView('pos'); };
-  const handleLogout = async () => { await signOut(auth); setUserData(null); setView('login'); };
+  const handleLogout = async () => { await signOut(auth); setUserData(null); setCurrentShiftData(null); localStorage.removeItem('kiosco_shift_data'); setView('login'); };
   const handleReopenShift = () => { setPrintData(null); setCurrentShiftData(null); setShowShiftStartModal(true); };
+  const handleManualOpenShift = () => setShowShiftStartModal(true);
   const handleReloadData = () => window.location.reload();
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // ... (Transacciones y demás funciones igual que antes) ...
+  // --- TRANSACCIONES ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -318,7 +331,6 @@ export default function KioscoSystem() {
   if (!userData || showShiftStartModal) {
     if (userData && showShiftStartModal) return <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4"><ShiftStartModal onStart={handleStartShift} username={userData.name} onCancel={handleLogout} /></div>;
     
-    // --- VISTA LOGIN / REGISTRO SEPARADA ---
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
         <Card className="w-full max-w-sm p-8 text-center shadow-xl border border-gray-100">
@@ -414,7 +426,7 @@ export default function KioscoSystem() {
 const MenuLink = ({ icon: Icon, label, active, onClick }) => <button onClick={onClick} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${active ? 'bg-blue-50 text-blue-700 font-bold' : 'text-gray-600 hover:bg-gray-50'}`}><Icon size={20} />{label}</button>;
 const NavButton = ({ active, onClick, icon: Icon, label }) => <button onClick={onClick} className={`flex flex-col items-center justify-center w-full py-2 rounded-lg transition-colors ${active ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}><Icon size={24} strokeWidth={active ? 2.5 : 2} /><span className="text-[10px] font-medium mt-1">{label}</span></button>;
 
-// --- SHIFT START MODAL (NUEVO) ---
+// --- SHIFT START MODAL ---
 const ShiftStartModal = ({ onStart, username, onCancel }) => {
   const [initialChange, setInitialChange] = useState('');
   const [supplierFund, setSupplierFund] = useState('');
@@ -429,29 +441,11 @@ const ShiftStartModal = ({ onStart, username, onCancel }) => {
 
   return (
     <Card className="w-full max-w-sm p-6 shadow-2xl animate-in">
-        <div className="text-center mb-6">
-            <h2 className="text-xl font-bold text-gray-800">Apertura de Caja</h2>
-            <p className="text-sm text-gray-500">Hola, {username}. Por favor declara tu caja inicial.</p>
-        </div>
+        <div className="text-center mb-6"><h2 className="text-xl font-bold text-gray-800">Apertura de Caja</h2><p className="text-sm text-gray-500">Hola, {username}. Por favor declara tu caja inicial.</p></div>
         <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-                <label className="text-xs font-bold text-gray-500 uppercase ml-1">Saldo Inicial Cambio</label>
-                <div className="relative">
-                    <DollarSign className="absolute left-3 top-3 text-green-500" size={18}/>
-                    <input type="number" autoFocus value={initialChange} onChange={e=>setInitialChange(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold text-lg" placeholder="0.00" required />
-                </div>
-            </div>
-            <div>
-                <label className="text-xs font-bold text-gray-500 uppercase ml-1">Fondo Proveedores</label>
-                <div className="relative">
-                    <Truck className="absolute left-3 top-3 text-orange-500" size={18}/>
-                    <input type="number" value={supplierFund} onChange={e=>setSupplierFund(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold text-lg" placeholder="0.00" />
-                </div>
-            </div>
-            <div className="pt-2 flex gap-2">
-                <Button variant="secondary" className="flex-1" onClick={onCancel}>Salir</Button>
-                <Button type="submit" className="flex-[2]">Abrir Caja</Button>
-            </div>
+            <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Saldo Inicial Cambio</label><div className="relative"><DollarSign className="absolute left-3 top-3 text-green-500" size={18}/><input type="number" autoFocus value={initialChange} onChange={e=>setInitialChange(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold text-lg" placeholder="0.00" required /></div></div>
+            <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Fondo Proveedores</label><div className="relative"><Truck className="absolute left-3 top-3 text-orange-500" size={18}/><input type="number" value={supplierFund} onChange={e=>setSupplierFund(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold text-lg" placeholder="0.00" /></div></div>
+            <div className="pt-2 flex gap-2"><Button variant="secondary" className="flex-1" onClick={onCancel}>Salir</Button><Button type="submit" className="flex-[2]">Abrir Caja</Button></div>
         </form>
     </Card>
   );
@@ -461,14 +455,11 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   const [activeTab, setActiveTab] = useState('summary');
   const mySales = sales.filter(s => s.user === user.name && s.status === 'open');
   const myPayments = payments.filter(p => p.user === user.name && p.status === 'open');
-  
   const totalSales = mySales.reduce((acc, curr) => acc + curr.total, 0);
   const totalPayments = myPayments.reduce((acc, curr) => acc + curr.amount, 0);
-  
   const cashSales = mySales.filter(s => s.method === 'Efectivo').reduce((acc, c) => acc + c.total, 0);
   const cardSales = mySales.filter(s => s.method === 'Tarjeta').reduce((acc, c) => acc + c.total, 0);
   const transfSales = mySales.filter(s => s.method === 'Transferencia').reduce((acc, c) => acc + c.total, 0);
-  
   const initial = shiftData ? (shiftData.initialChange + shiftData.supplierFund) : 0;
   const cashInDrawer = initial + cashSales - totalPayments;
 
@@ -496,31 +487,18 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
         
         <Card className="p-4"><h3 className="font-bold text-sm text-gray-500 mb-3 uppercase">Total Ventas: ${totalSales.toLocaleString()}</h3><div className="space-y-3"><div className="flex justify-between items-center"><span className="text-sm">Efectivo</span><div className="text-right"><div className="font-bold">${cashSales}</div><div className="text-xs text-gray-400">Billetes</div></div></div><div className="flex justify-between items-center"><span className="text-sm">Tarjeta</span><div className="text-right"><div className="font-bold">${cardSales}</div><div className="text-xs text-gray-400">Posnet</div></div></div><div className="flex justify-between items-center"><span className="text-sm">Transferencia</span><div className="text-right"><div className="font-bold">${transfSales}</div><div className="text-xs text-gray-400">MP / QR</div></div></div></div></Card>
         
-        <div className="flex bg-gray-200 p-1 rounded-lg"><button onClick={()=>setActiveTab('summary')} className={`flex-1 py-2 text-sm rounded ${activeTab==='summary'?'bg-white shadow':''}`}>Resumen</button><button onClick={()=>setActiveTab('sales')} className={`flex-1 py-2 text-sm rounded ${activeTab==='sales'?'bg-white shadow':''}`}>Movimientos</button></div>
+        <div className="flex bg-gray-200 p-1 rounded-lg"><button onClick={()=>setActiveTab('summary')} className={`flex-1 py-2 text-sm rounded ${activeTab==='summary'?'bg-white shadow':''}`}>Resumen</button><button onClick={()=>setActiveTab('sales')} className={`flex-1 py-2 text-sm rounded ${activeTab==='sales'?'bg-white shadow':''}`}>Ventas</button><button onClick={()=>setActiveTab('payments')} className={`flex-1 py-2 text-sm rounded ${activeTab==='payments'?'bg-white shadow':''}`}>Pagos</button></div>
         
-        {activeTab === 'sales' && (
-             <div className="space-y-2">
-                 {mySales.length === 0 && <div className="text-center text-gray-400 py-4">Sin ventas</div>}
-                 {mySales.map(s => (
-                 <div key={s.id} className="bg-white p-3 rounded border flex justify-between items-center">
-                    <div><div className="font-bold text-sm">#{s.id.toString().slice(-4)} • ${s.total}</div><div className="text-xs text-gray-500">{new Date(s.date).toLocaleTimeString()} ({s.method})</div></div>
-                    <button onClick={()=>onDeleteSale(s.id, s.items)} className="p-2 text-red-300 hover:text-red-500 bg-red-50 rounded"><Trash2 size={16}/></button>
-                 </div>
-                 ))}
-             </div>
-        )}
+        {activeTab === 'sales' && <div className="space-y-2">{mySales.length === 0 ? <div className="text-center text-gray-400 py-4">Sin ventas</div> : mySales.map(s => (<div key={s.id} className="bg-white p-3 rounded border flex justify-between items-center"><div><div className="font-bold text-sm">#{s.id.toString().slice(-4)} • ${s.total}</div><div className="text-xs text-gray-500">{new Date(s.date).toLocaleTimeString()} ({s.method})</div></div><button onClick={()=>onDeleteSale(s.id, s.items)} className="p-2 text-red-300 hover:text-red-500 bg-red-50 rounded"><Trash2 size={16}/></button></div>))}</div>}
+        {activeTab === 'payments' && <div className="space-y-2">{myPayments.length === 0 ? <div className="text-center text-gray-400 py-4">Sin pagos</div> : myPayments.map(p => (<div key={p.id} className="bg-white p-3 rounded border flex justify-between items-center"><div><div className="font-bold text-sm text-red-600">-${p.amount}</div><div className="text-xs text-gray-500">{p.supplier}</div></div><div className="text-xs text-gray-400">{p.note}</div></div>))}</div>}
         
-        {activeTab === 'summary' && <div className="space-y-3">
-             <div className="text-xs text-gray-500 text-center italic">Al cerrar la caja, se generará el reporte y podrás reabrirla inmediatamente.</div>
-             <Button onClick={onCloseShift} variant="danger" className="w-full h-12 text-lg"><Printer className="mr-2"/> Cerrar Caja e Imprimir</Button>
-        </div>}
+        {activeTab === 'summary' && <div className="space-y-3"><div className="text-xs text-gray-500 text-center italic">Al cerrar la caja, se generará el reporte y podrás reabrirla inmediatamente.</div><Button onClick={onCloseShift} variant="danger" className="w-full h-12 text-lg"><Printer className="mr-2"/> Cerrar Caja e Imprimir</Button></div>}
     </div>
   );
 };
 
-// --- PRODUCT MANAGER (UPDATED WITH DELETE) ---
+// --- PRODUCT MANAGER (UPDATED) ---
 const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onProductTransaction, onDeleteProduct }) => {
-  // (Mismo código que antes, agregando botón de borrar si es admin)
   const [editingId, setEditingId] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [modalMode, setModalMode] = useState('CREATE'); 
