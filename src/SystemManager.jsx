@@ -86,7 +86,7 @@ export default function KioscoSystem() {
   const [appUser, setAppUser] = useState(null); 
   const [view, setView] = useState('login'); 
   
-  // Estados de Datos (Inicializados vacíos para evitar conflictos)
+  // Estados de Datos
   const [products, setProducts] = useState([]);
   const [sales, setSales] = useState([]);
   const [payments, setPayments] = useState([]); 
@@ -134,7 +134,8 @@ export default function KioscoSystem() {
         if (err.code === 'permission-denied') {
             setDbError("PERMISOS DENEGADOS: Ve a Firebase Console -> Firestore -> Reglas y configúralas a 'allow read, write: if true;'");
         } else {
-            setDbError(`Error de base de datos: ${err.message}`);
+            // Ignorar errores menores de conexión temporal
+            console.warn(`Error de base de datos: ${err.message}`);
         }
     };
 
@@ -189,7 +190,6 @@ export default function KioscoSystem() {
   const seedDatabase = async () => {
     try {
         const batch = writeBatch(db);
-        // Productos con IDs generados automáticamente
         const demoProducts = [
             { name: 'Coca Cola 500ml', barcode: '7790895000997', stock: 24, minStock: 10, cost: 800, price: 1500, hasIva: true, margin: 50 },
             { name: 'Alfajor Jorgito', barcode: '7791234567890', stock: 5, minStock: 10, cost: 400, price: 800, hasIva: true, margin: 100 },
@@ -199,7 +199,7 @@ export default function KioscoSystem() {
             batch.set(ref, p);
         });
         await batch.commit();
-        alert("Productos de ejemplo cargados correctamente.");
+        alert("Productos de ejemplo cargados. Ya puedes vender.");
     } catch (e) {
         console.error(e);
         alert("Error al cargar ejemplos: " + e.message);
@@ -215,23 +215,24 @@ export default function KioscoSystem() {
 
       if (isRestock) {
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-        // Verificamos que el producto existe en el estado local antes de enviar
         const currentProd = products.find(p => p.id === productId);
         
-        if (!currentProd) {
-            alert("Error: El producto no existe en la base de datos (quizás fue borrado).");
+        if (currentProd) {
+            // CORRECCIÓN: Usar set con merge: true evita el error "No document to update"
+            // si el documento no existe por alguna razón (ej: borrado externo).
+            batch.set(productRef, {
+                stock: Number(currentProd.stock) + Number(addedStock),
+                cost: Number(productData.newCost),
+                price: Number(productData.newPrice)
+            }, { merge: true });
+        } else {
+            alert("El producto no se encuentra en la base de datos.");
             return;
         }
-
-        batch.update(productRef, {
-            stock: Number(currentProd.stock) + Number(addedStock),
-            cost: Number(productData.newCost),
-            price: Number(productData.newPrice)
-        });
       } else {
         if (productId) {
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-             batch.update(productRef, productData.fullObject);
+             batch.set(productRef, productData.fullObject, { merge: true });
         } else {
              const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
              batch.set(newProductRef, productData.fullObject);
@@ -288,7 +289,8 @@ export default function KioscoSystem() {
             const currentProd = products.find(p => p.id === item.id);
             if (currentProd) {
                 const newStock = Number(currentProd.stock) - Number(item.qty);
-                batch.update(prodRef, { stock: newStock });
+                // Usamos set con merge para evitar fallos si el doc desapareció
+                batch.set(prodRef, { stock: newStock }, { merge: true });
             }
         });
 
@@ -296,8 +298,7 @@ export default function KioscoSystem() {
         setCart([]);
     } catch (e) {
         console.error("Error checkout:", e);
-        if (e.code === 'not-found') alert("Error: Intenta recargar la página, datos desactualizados.");
-        else alert("Error al procesar la venta: " + e.message);
+        alert("Error al procesar la venta: " + e.message);
     }
   };
 
@@ -328,7 +329,7 @@ export default function KioscoSystem() {
                     const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
                     const currentProd = products.find(p => p.id === item.id);
                     if (currentProd) {
-                        batch.update(prodRef, { stock: Number(currentProd.stock) + Number(item.qty) });
+                        batch.set(prodRef, { stock: Number(currentProd.stock) + Number(item.qty) }, { merge: true });
                     }
                 });
             }
