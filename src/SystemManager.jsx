@@ -26,7 +26,10 @@ import {
   onSnapshot, 
   writeBatch,
   getDoc,
-  setDoc
+  setDoc,
+  getDocs,
+  query,
+  where
 } from 'firebase/firestore';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -78,7 +81,7 @@ const Button = ({ onClick, children, variant = "primary", className = "", icon: 
 // --- App Principal ---
 
 export default function KioscoSystem() {
-  const [user, setUser] = useState(null); // Usuario autenticado de Firebase
+  const [firebaseUser, setFirebaseUser] = useState(null); 
   const [userData, setUserData] = useState(null); // Datos del usuario (Rol, Nombre) desde Firestore
   const [view, setView] = useState('login'); 
   
@@ -90,7 +93,8 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
   
-  const [currentShiftData, setCurrentShiftData] = useState(null);
+  // Estado de Turno Actual
+  const [currentShiftData, setCurrentShiftData] = useState(null); // { initialChange: 0, supplierFund: 0 }
 
   // UI
   const [cart, setCart] = useState([]);
@@ -110,12 +114,17 @@ export default function KioscoSystem() {
   const [registerName, setRegisterName] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Monitor de Autenticación
+  // 1. Limpieza de Caché Local al Iniciar
+  useEffect(() => {
+    localStorage.clear(); 
+  }, []);
+
+  // 2. Monitor de Autenticación (CORREGIDO)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
       if (firebaseUser) {
-        setUser(firebaseUser);
+        setFirebaseUser(firebaseUser);
         // Buscar datos extra del usuario (rol) en Firestore
         try {
             const docRef = doc(db, 'tiendas', STORE_ID, 'users', firebaseUser.uid);
@@ -123,6 +132,7 @@ export default function KioscoSystem() {
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 setUserData({ uid: firebaseUser.uid, ...data });
+                // Si ya tiene datos, decidir vista
                 if (data.role === 'admin') {
                     setView('pos');
                     setCurrentShiftData({ initialChange: 0, supplierFund: 0 }); // Admin salta apertura
@@ -130,18 +140,27 @@ export default function KioscoSystem() {
                     setShowShiftStartModal(true);
                 }
             } else {
-                // Si el usuario existe en Auth pero no en DB (raro), lo creamos como user
-                const newData = { name: firebaseUser.email.split('@')[0], role: 'user', email: firebaseUser.email };
+                // Si el documento NO existe (ej. login social o error en registro), lo creamos seguro
+                const safeName = firebaseUser.email ? firebaseUser.email.split('@')[0] : "Usuario";
+                const newData = { 
+                    name: firebaseUser.displayName || safeName, 
+                    role: 'user', 
+                    email: firebaseUser.email || 'sin_email' 
+                };
                 await setDoc(docRef, newData);
                 setUserData({ uid: firebaseUser.uid, ...newData });
                 setShowShiftStartModal(true);
             }
         } catch (e) {
             console.error("Error fetching user data:", e);
-            setDbError("Error al cargar perfil de usuario.");
+            if (e.code === 'permission-denied') {
+                 setDbError("PERMISOS DENEGADOS: Ve a Firebase Console -> Firestore -> Reglas y configúralas a 'allow read, write: if true;'");
+            } else {
+                 alert("Error al cargar perfil: " + e.message);
+            }
         }
       } else {
-        setUser(null);
+        setFirebaseUser(null);
         setUserData(null);
         setView('login');
       }
@@ -150,9 +169,9 @@ export default function KioscoSystem() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Sincronización de Datos (Snapshot Listeners)
+  // 3. Sincronización de Datos
   useEffect(() => {
-    if (!user) return;
+    if (!firebaseUser) return;
 
     const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
     
@@ -206,9 +225,9 @@ export default function KioscoSystem() {
     return () => {
       unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs();
     };
-  }, [user]);
+  }, [firebaseUser]);
 
-  // --- LOGIC: LOGIN & REGISTER (FIREBASE AUTH) ---
+  // --- LOGIC: LOGIN & REGISTER ---
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -232,6 +251,7 @@ export default function KioscoSystem() {
           const newUser = userCredential.user;
 
           // 2. Crear documento de usuario en Firestore con rol 'user'
+          // Importante: Hacemos esto antes de que el listener de Auth intente crearlo
           await setDoc(doc(db, 'tiendas', STORE_ID, 'users', newUser.uid), {
               name: registerName,
               email: email,
@@ -240,7 +260,6 @@ export default function KioscoSystem() {
           });
 
           alert("Usuario registrado con éxito.");
-          // No necesitamos hacer nada más, el listener de Auth detectará el login automático post-registro
       } catch (error) {
           console.error("Register error:", error);
           alert("Error al registrar: " + error.message);
@@ -255,7 +274,7 @@ export default function KioscoSystem() {
 
   const handleLogout = async () => {
     await signOut(auth);
-    setAppUser(null);
+    setUserData(null);
     setCurrentShiftData(null);
     setView('login');
   };
@@ -278,7 +297,7 @@ export default function KioscoSystem() {
             batch.set(ref, p);
         });
         await batch.commit();
-        alert("Productos de ejemplo cargados.");
+        alert("Productos de ejemplo cargados. Ya puedes vender.");
     } catch (e) {
         alert("Error al cargar ejemplos: " + e.message);
     }
@@ -315,7 +334,7 @@ export default function KioscoSystem() {
 
   // ... (Resto de funciones de transacciones: handleProductTransaction, handleCheckout, etc. se mantienen igual pero usando userData.name) ...
   const handleProductTransaction = async (productData, financialData) => {
-    const { isRestock, productId, addedStock } = productData;
+    const { isRestock, productId, addedStock, supplierName } = productData;
     const { totalCost, paymentStatus } = financialData; 
 
     try {
@@ -351,7 +370,7 @@ export default function KioscoSystem() {
             batch.set(paymentRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
-                supplier: productData.supplierName || 'General',
+                supplier: supplierName || 'Proveedor General',
                 note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial: ${productData.productName}`,
                 user: userData.name,
                 status: 'open' 
@@ -361,7 +380,7 @@ export default function KioscoSystem() {
             batch.set(debtRef, {
                 date: new Date().toISOString(),
                 amount: totalCost,
-                supplier: productData.supplierName || 'Sin Proveedor',
+                supplier: supplierName || 'Sin Proveedor',
                 productName: productData.productName,
                 qty: addedStock,
                 user: userData.name,
@@ -530,6 +549,16 @@ export default function KioscoSystem() {
                   <div className="bg-red-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600"><Lock size={40} /></div>
                   <h1 className="text-2xl font-bold text-gray-800 mb-2">Base de Datos Bloqueada</h1>
                   <p className="text-gray-600 mb-6">{dbError}</p>
+                  <div className="bg-gray-900 text-gray-300 p-4 rounded-lg text-left text-xs font-mono mb-6 overflow-x-auto">
+                      rules_version = '2';<br/>
+                      service cloud.firestore {'{'}<br/>
+                      &nbsp;&nbsp;match /databases/&#123;database&#125;/documents {'{'}<br/>
+                      &nbsp;&nbsp;&nbsp;&nbsp;match /&#123;document=**&#125; {'{'}<br/>
+                      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read, write: if true;<br/>
+                      &nbsp;&nbsp;&nbsp;&nbsp;{'}'}<br/>
+                      &nbsp;&nbsp;{'}'}<br/>
+                      {'}'}
+                  </div>
                   <Button onClick={() => window.location.reload()} className="w-full">Recargar Aplicación</Button>
               </Card>
           </div>
@@ -701,6 +730,8 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   const totalSales = mySales.reduce((acc, curr) => acc + curr.total, 0);
   const totalPayments = myPayments.reduce((acc, curr) => acc + curr.amount, 0);
   
+  // Caja Teórica = Inicial + Ventas Efectivo - Pagos Efectivo/Salidas
+  // (Simplificado: Asumimos que los pagos siempre salen de la caja de efectivo)
   const cashSales = mySales.filter(s => s.method === 'Efectivo').reduce((acc, c) => acc + c.total, 0);
   const cardSales = mySales.filter(s => s.method === 'Tarjeta').reduce((acc, c) => acc + c.total, 0);
   const transfSales = mySales.filter(s => s.method === 'Transferencia').reduce((acc, c) => acc + c.total, 0);
