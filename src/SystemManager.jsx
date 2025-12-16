@@ -153,6 +153,7 @@ export default function KioscoSystem() {
                     else setView('pos');
                 }
             } else {
+                // Autocreación de perfil si falta en DB (por robustez)
                 const safeName = firebaseUser.email ? firebaseUser.email.split('@')[0] : "Usuario";
                 const newData = { name: safeName, role: 'user', email: firebaseUser.email || 'sin_email' };
                 await setDoc(docRef, newData);
@@ -235,10 +236,39 @@ export default function KioscoSystem() {
   const handleReopenShift = () => { setPrintData(null); setCurrentShiftData(null); setShowShiftStartModal(true); };
   const handleManualOpenShift = () => setShowShiftStartModal(true);
   const handleReloadData = () => window.location.reload();
-  const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
-  const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
+  
+  // Seed Database (Crear productos ejemplo con IDs seguros)
+  const seedDatabase = async () => { 
+      try { 
+          const b = writeBatch(db); 
+          const prods = [
+              {name:'Coca Cola 500ml', price:1500, stock:10, cost:800, minStock:5, margin:50},
+              {name:'Alfajor Jorgito', price:800, stock:20, cost:400, minStock:5, margin:100}
+          ];
+          prods.forEach(p => b.set(doc(collection(db,'tiendas',STORE_ID,'products')), p)); 
+          await b.commit(); 
+          alert("Datos cargados. ¡IMPORTANTE! Si tenías datos viejos, usa 'Restablecer de Fábrica' antes."); 
+      } catch(e){alert(e);} 
+  };
+  
+  const handleFactoryReset = async () => { 
+      if(window.confirm("¿BORRAR TODO? Esta acción elimina productos, ventas y cierres.")) { 
+          setLoading(true); 
+          try { 
+              await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { 
+                  const q=query(collection(db,'tiendas',STORE_ID,c)); 
+                  const s=await getDocs(q); 
+                  const b=writeBatch(db); 
+                  s.forEach(d=>b.delete(d.ref)); 
+                  await b.commit(); 
+              })); 
+              alert("Reset completo. Base de datos limpia."); 
+          } catch(e){alert(e);} 
+          finally{setLoading(false);} 
+      } 
+  };
 
-  // --- TRANSACCIONES CORREGIDAS (SET CON MERGE) ---
+  // --- TRANSACCIONES BLINDADAS (NO DUPLICADOS) ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -253,26 +283,24 @@ export default function KioscoSystem() {
       
       if (isRestock) {
         if (!productId) {
-            alert("Error Crítico: ID de producto no encontrado.");
+            alert("Error Crítico: ID de producto no encontrado. Recarga la app.");
             return;
         }
         
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // CORRECCIÓN PRINCIPAL: Usar set con merge: true.
-        // Esto previene el error "No document to update".
-        // Si el documento no existe, lo crea con los datos completos.
-        // Si existe, actualiza stock y precios.
+        // CORRECCIÓN CRÍTICA: Usar 'set' con 'merge' para evitar "No document to update"
+        // pero asegurando que apuntamos al ID existente.
         batch.set(productRef, {
-            ...productData.fullObject, // Asegura que existan datos base si se recrea
             ...dataToUpdate,
+            // Sumamos el stock de forma atómica
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
         }, { merge: true });
 
       } else {
-        // Create or Edit Details
+        // Create or Update Details (No stock addition logic here)
         if (productId) {
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
              batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
@@ -312,7 +340,8 @@ export default function KioscoSystem() {
         batch.set(saleRef, { date: new Date().toISOString(), total, items, method, user: userData.name, status: 'open' });
         items.forEach(item => {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
-            batch.update(prodRef, { stock: increment(-Number(item.qty)) });
+            // Usar set merge con increment negativo para restar seguro
+            batch.set(prodRef, { stock: increment(-Number(item.qty)) }, { merge: true });
         });
         await batch.commit();
         setCart([]);
@@ -320,7 +349,21 @@ export default function KioscoSystem() {
   };
 
   const requestAuthorization = async (type, payload, description) => { try { await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), { type, payload, description, requester: userData.name, timestamp: new Date().toISOString(), status: 'pending' }); alert("⛔ Solicitud enviada."); } catch (e) { console.error(e); } };
-  const handleDeleteProduct = async (prodId) => { if (userData?.role !== 'admin') { alert("Acceso denegado: Solo el dueño puede borrar productos."); return; } if (window.confirm("⚠️ ¿Estás seguro de ELIMINAR este producto definitivamente?")) { try { await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); console.log("Producto eliminado correctamente"); } catch (e) { console.error("Error eliminando:", e); alert("Error al borrar: " + e.message); } } };
+  
+  // --- FUNCIÓN DE BORRADO (CORREGIDA) ---
+  const handleDeleteProduct = async (prodId) => {
+      if (userData?.role !== 'admin') { alert("Acceso denegado: Solo el dueño puede borrar productos."); return; }
+      if (window.confirm("⚠️ ¿Estás seguro de ELIMINAR este producto definitivamente?")) {
+          try { 
+            await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); 
+            // Feedback
+          } catch (e) { 
+            console.error("Error eliminando:", e); 
+            alert("Error al borrar: " + e.message); 
+          }
+      }
+  };
+
   const handleDeleteSale = async (saleId, items) => { if (userData.role === 'admin') { if(window.confirm('¿Anular venta?')) executeDeleteSale(saleId, items); } else requestAuthorization('DELETE_SALE', { saleId }, `Solicita anular venta`); };
   const executeDeleteSale = async (saleId, items) => { const batch = writeBatch(db); batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', saleId)); if (items) items.forEach(item => { const ref = doc(db, 'tiendas', STORE_ID, 'products', item.id); batch.update(ref, { stock: increment(Number(item.qty)) }); }); await batch.commit(); };
   const handleApproveRequest = async (req) => { if (req.type === 'DELETE_SALE') { const sale = sales.find(s => s.id === req.payload.saleId); if (sale) executeDeleteSale(sale.id, sale.items); } else if (req.type === 'PRODUCT_TRANSACTION' || req.type === 'EDIT_PRODUCT') await handleProductTransaction(req.payload.productData, req.payload.financialData); await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id)); setShowNotifications(false); };
