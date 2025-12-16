@@ -236,11 +236,9 @@ export default function KioscoSystem() {
   const handleManualOpenShift = () => setShowShiftStartModal(true);
   const handleReloadData = () => window.location.reload();
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
-  
-  // Función de Reset (Limpieza de Fábrica) - Sin duplicados, esta borra todo
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES ESTRICTAS (SIN DUPLICADOS) ---
+  // --- TRANSACCIONES CORREGIDAS (SET CON MERGE) ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -255,29 +253,30 @@ export default function KioscoSystem() {
       
       if (isRestock) {
         if (!productId) {
-            alert("Error Crítico: No se identificó el producto para reponer.");
+            alert("Error Crítico: ID de producto no encontrado.");
             return;
         }
         
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // REPOSICIÓN: Actualiza campos y suma stock
-        // NO crea documentos nuevos.
-        batch.update(productRef, {
+        // CORRECCIÓN PRINCIPAL: Usar set con merge: true.
+        // Esto previene el error "No document to update".
+        // Si el documento no existe, lo crea con los datos completos.
+        // Si existe, actualiza stock y precios.
+        batch.set(productRef, {
+            ...productData.fullObject, // Asegura que existan datos base si se recrea
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
-        });
+        }, { merge: true });
 
       } else {
         // Create or Edit Details
         if (productId) {
-             // Editando detalles de un producto existente
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-             batch.update(productRef, { ...productData.fullObject, ...dataToUpdate });
+             batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
         } else {
-             // Creando uno nuevo desde cero
              const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
              batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
         }
@@ -514,13 +513,14 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   );
 };
 
-// --- PRODUCT MANAGER (UPDATED: FIXED UI AND LOGIC) ---
+// --- PRODUCT MANAGER (UPDATED: NEW FIELDS + ALERTS) ---
 const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onProductTransaction, onDeleteProduct }) => {
   const [editingId, setEditingId] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [modalMode, setModalMode] = useState('CREATE'); 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
+  // Agregados campos: category, expiry
   const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' });
   const [calculations, setCalculations] = useState({ unitBase: 0, unitFinal: 0, finalStock: 0 });
 
@@ -528,24 +528,17 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const costTotal = parseFloat(formData.inputCost) || 0;
     const qtyLote = parseFloat(formData.batchQty) || 0; 
     let unitBase = 0;
-    
-    // Si hay lote, calculamos sobre el lote
     if (qtyLote > 0) {
         unitBase = costTotal / qtyLote;
     } else if (modalMode === 'EDIT_DETAILS' && editingId) {
-        // Si no hay lote (edición de detalles), usamos el costo actual
         const p = products.find(p => p.id === editingId);
         unitBase = p ? (p.hasIva ? p.cost : p.cost / 1.21) : 0;
     }
-    
     const unitFinal = formData.hasIva ? unitBase : unitBase * 1.21;
-    
-    // Cálculo de stock proyectado para la UI
     let finalStock = formData.currentStock;
-    if (modalMode === 'RESTOCK' && editingId) {
+    if (modalMode === 'RESTOCK') {
         finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyLote;
     }
-
     setCalculations({ unitBase, unitFinal, finalStock });
   }, [formData.inputCost, formData.batchQty, formData.currentStock, formData.hasIva, modalMode, editingId]);
 
@@ -561,6 +554,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
     
+    // Objeto de Producto con los nuevos campos
     const productData = { 
         isRestock: modalMode === 'RESTOCK', 
         productId: editingId, 
@@ -569,24 +563,23 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
         newPrice: sellingPrice, 
         productName: formData.name, 
         supplierName: formData.supplier,
-        category: formData.category, 
-        expiry: formData.expiry,
+        category: formData.category, // NEW
+        expiry: formData.expiry,     // NEW
         fullObject: { 
             id: editingId || Date.now().toString(), 
             name: formData.name, 
             barcode: formData.barcode, 
-            stock: Number(formData.currentStock), // En CREATE usa esto
+            stock: Number(formData.currentStock),
             minStock: parseInt(formData.minStock) || 5, 
             cost: newCost, 
             price: sellingPrice, 
             hasIva: formData.hasIva, 
             margin: parseFloat(formData.margin),
-            category: formData.category,
-            expiry: formData.expiry
+            category: formData.category, // NEW
+            expiry: formData.expiry      // NEW
         } 
     };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
-    
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
     else onProductTransaction(productData, financialData);
     
@@ -645,12 +638,13 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
           <div className="space-y-4">
             {modalMode !== 'RESTOCK' && <><input className="w-full p-2 border rounded" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" /><div className="flex gap-2"><input className="w-full p-2 border rounded bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" /><Scan className="text-gray-400 mt-2"/></div></>}
             
+            {/* Categoría y Vencimiento */}
             <div className="flex gap-2">
                 <div className="flex-1"><label className="text-xs font-bold text-gray-500">Categoría</label><select className="w-full p-2 border rounded bg-white" value={formData.category} onChange={e=>setFormData({...formData, category:e.target.value})}><option>Varios</option><option>Bebidas</option><option>Golosinas</option><option>Almacén</option><option>Cigarrillos</option><option>Limpieza</option><option>Lácteos</option></select></div>
                 <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
             </div>
 
-            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
+            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
             <hr/>
             <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
             <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
