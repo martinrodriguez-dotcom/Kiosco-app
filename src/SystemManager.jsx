@@ -238,7 +238,7 @@ export default function KioscoSystem() {
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES CORREGIDAS (SET CON MERGE) ---
+  // --- TRANSACCIONES BLINDADAS ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -259,10 +259,12 @@ export default function KioscoSystem() {
         
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // CORRECCIÓN CRÍTICA: Usar 'set' con 'merge' para evitar "No document to update"
-        // y pasar el objeto completo de producto por si hay que recrearlo.
+        // AQUÍ ESTÁ LA MAGIA: 
+        // Usamos ...productData.fullObject para asegurar que SIEMPRE viaje el nombre y el código.
+        // Pero sobreescribimos el 'stock' con el 'increment' para que la suma sea sagrada.
+        // Así, si el producto existía, suma. Si no existía, lo crea completo con el stock inicial correcto.
         batch.set(productRef, {
-            ...productData.fullObject, // Asegura restauración si se perdió
+            ...productData.fullObject, 
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
@@ -319,21 +321,7 @@ export default function KioscoSystem() {
   };
 
   const requestAuthorization = async (type, payload, description) => { try { await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), { type, payload, description, requester: userData.name, timestamp: new Date().toISOString(), status: 'pending' }); alert("⛔ Solicitud enviada."); } catch (e) { console.error(e); } };
-  
-  // --- FUNCIÓN DE BORRADO (CORREGIDA) ---
-  const handleDeleteProduct = async (prodId) => {
-      if (userData?.role !== 'admin') { alert("Acceso denegado: Solo el dueño puede borrar productos."); return; }
-      if (window.confirm("⚠️ ¿Estás seguro de ELIMINAR este producto definitivamente?")) {
-          try { 
-            await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); 
-            // Feedback
-          } catch (e) { 
-            console.error("Error eliminando:", e); 
-            alert("Error al borrar: " + e.message); 
-          }
-      }
-  };
-
+  const handleDeleteProduct = async (prodId) => { if (userData?.role !== 'admin') { alert("Acceso denegado: Solo el dueño puede borrar productos."); return; } if (window.confirm("⚠️ ¿Estás seguro de ELIMINAR este producto definitivamente?")) { try { await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); console.log("Producto eliminado correctamente"); } catch (e) { console.error("Error eliminando:", e); alert("Error al borrar: " + e.message); } } };
   const handleDeleteSale = async (saleId, items) => { if (userData.role === 'admin') { if(window.confirm('¿Anular venta?')) executeDeleteSale(saleId, items); } else requestAuthorization('DELETE_SALE', { saleId }, `Solicita anular venta`); };
   const executeDeleteSale = async (saleId, items) => { const batch = writeBatch(db); batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', saleId)); if (items) items.forEach(item => { const ref = doc(db, 'tiendas', STORE_ID, 'products', item.id); batch.update(ref, { stock: increment(Number(item.qty)) }); }); await batch.commit(); };
   const handleApproveRequest = async (req) => { if (req.type === 'DELETE_SALE') { const sale = sales.find(s => s.id === req.payload.saleId); if (sale) executeDeleteSale(sale.id, sale.items); } else if (req.type === 'PRODUCT_TRANSACTION' || req.type === 'EDIT_PRODUCT') await handleProductTransaction(req.payload.productData, req.payload.financialData); await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id)); setShowNotifications(false); };
