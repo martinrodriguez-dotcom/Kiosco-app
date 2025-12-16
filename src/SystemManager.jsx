@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw, LogIn, ArrowLeft
+  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw, LogIn, ArrowLeft, Tag, CalendarDays
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -48,7 +48,6 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// ID del Kiosco para la base de datos
 const STORE_ID = 'mi-kiosco-principal';
 
 // --- Componentes UI Básicos ---
@@ -79,6 +78,16 @@ const Button = ({ onClick, children, variant = "primary", className = "", icon: 
   );
 };
 
+// --- Helpers de Fecha ---
+const getDaysUntilExpiry = (dateString) => {
+  if (!dateString) return null;
+  const today = new Date();
+  const expiry = new Date(dateString);
+  const diffTime = expiry - today;
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+  return diffDays;
+};
+
 // --- App Principal ---
 
 export default function KioscoSystem() {
@@ -94,7 +103,7 @@ export default function KioscoSystem() {
   const [closedShifts, setClosedShifts] = useState([]); 
   const [notifications, setNotifications] = useState([]); 
   
-  // Estado de Turno Actual (Ahora persistente en localStorage)
+  // Estado de Turno Actual
   const [currentShiftData, setCurrentShiftData] = useState(() => {
     const saved = localStorage.getItem('kiosco_shift_data');
     return saved ? JSON.parse(saved) : null;
@@ -111,17 +120,20 @@ export default function KioscoSystem() {
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null); 
   
-  // Login & Register Inputs
+  // Login Inputs
   const [isRegistering, setIsRegistering] = useState(false);
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
-  const [registerName, setRegisterName] = useState('');
-  const [registerUsername, setRegisterUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [regName, setRegName] = useState('');
+  const [regUsername, setRegUsername] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPass, setRegPass] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Monitor de Autenticación
+  // 1. Limpieza de Caché
+  useEffect(() => { localStorage.clear(); }, []);
+
+  // 2. Monitor Auth
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
@@ -133,16 +145,12 @@ export default function KioscoSystem() {
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 setUserData({ uid: firebaseUser.uid, ...data });
-                // LÓGICA DE INICIO
                 if (data.role === 'admin') {
                     setView('pos');
+                    setCurrentShiftData(null); 
                 } else {
-                    // Si es cajero y NO tiene turno abierto en memoria, mostrar modal
-                    if (!currentShiftData) {
-                        setShowShiftStartModal(true);
-                    } else {
-                        setView('pos');
-                    }
+                    if(!currentShiftData) setShowShiftStartModal(true);
+                    else setView('pos');
                 }
             } else {
                 const safeName = firebaseUser.email ? firebaseUser.email.split('@')[0] : "Usuario";
@@ -156,31 +164,31 @@ export default function KioscoSystem() {
             if (e.code === 'permission-denied') setDbError("PERMISOS DENEGADOS: Configura las reglas en Firebase.");
         }
       } else {
-        setFirebaseUser(null);
-        setUserData(null);
-        setView('login');
+        setFirebaseUser(null); setUserData(null); setView('login');
       }
       setLoading(false);
     });
     return () => unsubscribe();
-  }, [currentShiftData]); // Dependencia agregada para revaluar si cambia turno
-
-  // 2. Persistencia de Shift Data
-  useEffect(() => {
-      if (currentShiftData) {
-          localStorage.setItem('kiosco_shift_data', JSON.stringify(currentShiftData));
-      } else {
-          localStorage.removeItem('kiosco_shift_data');
-      }
   }, [currentShiftData]);
 
-  // 3. Sincronización de Datos
+  useEffect(() => {
+      if (currentShiftData) localStorage.setItem('kiosco_shift_data', JSON.stringify(currentShiftData));
+      else localStorage.removeItem('kiosco_shift_data');
+  }, [currentShiftData]);
+
+  // 3. Sync Data
   useEffect(() => {
     if (!firebaseUser) return;
     const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
     const handleSnapshotError = (err) => { if (err.code === 'permission-denied') setDbError("PERMISOS DENEGADOS"); };
 
-    const unsubProducts = onSnapshot(getPath('products'), (snap) => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data(), stock: Number(d.data().stock||0), minStock: Number(d.data().minStock||0), cost: Number(d.data().cost||0), price: Number(d.data().price||0) }))), handleSnapshotError);
+    const unsubProducts = onSnapshot(getPath('products'), (snap) => setProducts(snap.docs.map(d => ({ 
+        id: d.id, ...d.data(), 
+        stock: Number(d.data().stock||0), 
+        minStock: Number(d.data().minStock||0), 
+        cost: Number(d.data().cost||0), 
+        price: Number(d.data().price||0) 
+    }))), handleSnapshotError);
     const unsubSales = onSnapshot(getPath('sales'), (snap) => setSales(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
     const unsubPayments = onSnapshot(getPath('payments'), (snap) => setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
     const unsubDebts = onSnapshot(getPath('debts'), (snap) => setDebts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
@@ -190,47 +198,30 @@ export default function KioscoSystem() {
     return () => { unsubProducts(); unsubSales(); unsubPayments(); unsubDebts(); unsubShifts(); unsubNotifs(); };
   }, [firebaseUser]);
 
-  // --- LOGIC: LOGIN & REGISTER ---
-
+  // Auth Handlers
   const handleLogin = async (e) => {
     e.preventDefault();
     if (!loginUser || !loginPass) return alert("Complete todos los campos");
-
     try {
         setLoading(true);
         const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
         const q = query(usersRef, where("username", "==", loginUser.trim()));
         const querySnapshot = await getDocs(q);
-
-        if (querySnapshot.empty) {
-            setLoading(false);
-            return alert("Usuario no encontrado.");
-        }
-
+        if (querySnapshot.empty) { setLoading(false); return alert("Usuario no encontrado."); }
         const userDoc = querySnapshot.docs[0].data();
         await signInWithEmailAndPassword(auth, userDoc.email, loginPass); 
-    } catch (error) { 
-        console.error(error); 
-        setLoading(false); 
-        alert("Contraseña incorrecta o error de acceso."); 
-    }
+    } catch (error) { console.error(error); setLoading(false); alert("Error de acceso: Credenciales inválidas."); }
   };
 
   const handleRegister = async (e) => {
       e.preventDefault();
-      if (!regEmail || !regPass || !regName || !regUsername) return alert("Complete todos los campos del registro");
-
+      if (!regEmail || !regPass || !regName || !regUsername) return alert("Complete todos los campos");
       try {
           setLoading(true);
           const usersRef = collection(db, 'tiendas', STORE_ID, 'users');
           const q = query(usersRef, where("username", "==", regUsername.trim()));
           const querySnapshot = await getDocs(q);
-
-          if (!querySnapshot.empty) {
-              setLoading(false);
-              return alert("El nombre de usuario ya está en uso.");
-          }
-
+          if (!querySnapshot.empty) { setLoading(false); return alert("El nombre de usuario ya está en uso."); }
           const userCredential = await createUserWithEmailAndPassword(auth, regEmail, regPass);
           await setDoc(doc(db, 'tiendas', STORE_ID, 'users', userCredential.user.uid), {
               name: regName, username: regUsername.trim(), email: regEmail, role: 'user', createdAt: new Date().toISOString()
@@ -253,16 +244,23 @@ export default function KioscoSystem() {
     const { totalCost, paymentStatus } = financialData; 
     try {
       const batch = writeBatch(db);
+      const dataToUpdate = {
+        category: productData.category || 'Varios', // Nueva funcionalidad: Categoría
+        expiry: productData.expiry || '',           // Nueva funcionalidad: Vencimiento
+      };
+      
       if (isRestock) {
+        if (!productId) throw new Error("ID perdido en reposición");
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         batch.set(productRef, {
+            ...dataToUpdate,
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
         }, { merge: true });
       } else {
         const ref = productId ? doc(db, 'tiendas', STORE_ID, 'products', productId) : doc(collection(db, 'tiendas', STORE_ID, 'products'));
-        batch.set(ref, productData.fullObject, { merge: true });
+        batch.set(ref, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
       }
       if (totalCost > 0) {
           const col = paymentStatus === 'PAID' ? 'payments' : 'debts';
@@ -288,7 +286,7 @@ export default function KioscoSystem() {
   };
 
   const requestAuthorization = async (type, payload, description) => { try { await addDoc(collection(db, 'tiendas', STORE_ID, 'notifications'), { type, payload, description, requester: userData.name, timestamp: new Date().toISOString(), status: 'pending' }); alert("⛔ Solicitud enviada."); } catch (e) { console.error(e); } };
-  const handleDeleteProduct = async (prodId) => { if (userData.role !== 'admin') return alert("Solo admin"); if (window.confirm("¿Borrar producto?")) { await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); } };
+  const handleDeleteProduct = async (prodId) => { if (userData?.role !== 'admin') { alert("Acceso denegado: Solo el dueño puede borrar productos."); return; } if (window.confirm("⚠️ ¿Estás seguro de ELIMINAR este producto definitivamente?")) { try { await deleteDoc(doc(db, 'tiendas', STORE_ID, 'products', prodId)); console.log("Producto eliminado correctamente"); } catch (e) { console.error("Error eliminando:", e); alert("Error al borrar: " + e.message); } } };
   const handleDeleteSale = async (saleId, items) => { if (userData.role === 'admin') { if(window.confirm('¿Anular venta?')) executeDeleteSale(saleId, items); } else requestAuthorization('DELETE_SALE', { saleId }, `Solicita anular venta`); };
   const executeDeleteSale = async (saleId, items) => { const batch = writeBatch(db); batch.delete(doc(db, 'tiendas', STORE_ID, 'sales', saleId)); if (items) items.forEach(item => { const ref = doc(db, 'tiendas', STORE_ID, 'products', item.id); batch.update(ref, { stock: increment(Number(item.qty)) }); }); await batch.commit(); };
   const handleApproveRequest = async (req) => { if (req.type === 'DELETE_SALE') { const sale = sales.find(s => s.id === req.payload.saleId); if (sale) executeDeleteSale(sale.id, sale.items); } else if (req.type === 'PRODUCT_TRANSACTION' || req.type === 'EDIT_PRODUCT') await handleProductTransaction(req.payload.productData, req.payload.financialData); await deleteDoc(doc(db, 'tiendas', STORE_ID, 'notifications', req.id)); setShowNotifications(false); };
@@ -330,14 +328,12 @@ export default function KioscoSystem() {
 
   if (!userData || showShiftStartModal) {
     if (userData && showShiftStartModal) return <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4"><ShiftStartModal onStart={handleStartShift} username={userData.name} onCancel={handleLogout} /></div>;
-    
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
         <Card className="w-full max-w-sm p-8 text-center shadow-xl border border-gray-100">
             <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-blue-200 shadow-lg"><Database size={32} /></div>
             <h1 className="text-2xl font-bold text-gray-800 mb-1">Kiosco Pro</h1>
             <p className="text-gray-400 text-sm mb-8">Gestión de Kiosco & Stock</p>
-            
             {isRegistering ? (
                 <form onSubmit={handleRegister} className="space-y-4 text-left animate-in">
                     <h3 className="text-sm font-bold text-blue-600 uppercase text-center mb-4">Crear Cuenta</h3>
@@ -350,14 +346,8 @@ export default function KioscoSystem() {
                 </form>
             ) : (
                 <form onSubmit={handleLogin} className="space-y-4 text-left animate-in">
-                    <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario</label>
-                        <div className="relative"><User className="absolute left-3 top-3 text-gray-400" size={18}/><input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingrese usuario" required /></div>
-                    </div>
-                    <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label>
-                        <div className="relative"><Key className="absolute left-3 top-3 text-gray-400" size={18}/><input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required /></div>
-                    </div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Usuario</label><div className="relative"><User className="absolute left-3 top-3 text-gray-400" size={18}/><input type="text" value={loginUser} onChange={e=>setLoginUser(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ingrese usuario" required /></div></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase ml-1">Contraseña</label><div className="relative"><Key className="absolute left-3 top-3 text-gray-400" size={18}/><input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} className="w-full pl-10 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" required /></div></div>
                     <Button type="submit" className="w-full py-3 mt-2">Iniciar Sesión</Button>
                     <div className="mt-6 text-center text-sm text-gray-500">¿No tienes cuenta? <button type="button" onClick={() => setIsRegistering(true)} className="text-blue-600 font-bold hover:underline">Regístrate</button></div>
                 </form>
@@ -389,7 +379,7 @@ export default function KioscoSystem() {
 
       <div className="max-w-4xl mx-auto p-4">
         {view === 'pos' && <POSView products={products} cart={cart} setCart={setCart} onCheckout={handleCheckout} onSeed={seedDatabase} />}
-        {view === 'products' && <ProductManager products={products} user={userData} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock); if(list.length) setRestockData(list); else alert("Stock OK"); }} onProductTransaction={handleProductTransaction} onDeleteProduct={handleDeleteProduct} />}
+        {view === 'products' && <ProductManager products={products} user={userData} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock||(p.expiry && getDaysUntilExpiry(p.expiry)<=7)); if(list.length) setRestockData(list); else alert("Todo OK. Sin alertas."); }} onProductTransaction={handleProductTransaction} onDeleteProduct={handleDeleteProduct} />}
         {view === 'shift' && <ShiftManager sales={sales} payments={payments} user={userData} shiftData={currentShiftData} onCloseShift={closeShift} onDeleteSale={handleDeleteSale} onOpenShift={handleManualOpenShift} />}
         {view === 'stats' && <StatsView sales={closedShifts.flatMap(s => s.sales).concat(sales)} />}
         {view === 'history' && <HistoryView closedShifts={closedShifts} setPrintData={setPrintData} />}
@@ -430,15 +420,7 @@ const NavButton = ({ active, onClick, icon: Icon, label }) => <button onClick={o
 const ShiftStartModal = ({ onStart, username, onCancel }) => {
   const [initialChange, setInitialChange] = useState('');
   const [supplierFund, setSupplierFund] = useState('');
-  
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    onStart({
-      initialChange: parseFloat(initialChange) || 0,
-      supplierFund: parseFloat(supplierFund) || 0
-    });
-  };
-
+  const handleSubmit = (e) => { e.preventDefault(); onStart({ initialChange: parseFloat(initialChange) || 0, supplierFund: parseFloat(supplierFund) || 0 }); };
   return (
     <Card className="w-full max-w-sm p-6 shadow-2xl animate-in">
         <div className="text-center mb-6"><h2 className="text-xl font-bold text-gray-800">Apertura de Caja</h2><p className="text-sm text-gray-500">Hola, {username}. Por favor declara tu caja inicial.</p></div>
@@ -497,22 +479,32 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   );
 };
 
-// --- PRODUCT MANAGER (UPDATED) ---
+// --- PRODUCT MANAGER (UPDATED: NEW FIELDS + ALERTS) ---
 const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onProductTransaction, onDeleteProduct }) => {
   const [editingId, setEditingId] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [modalMode, setModalMode] = useState('CREATE'); 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '' });
+  
+  // Agregados campos: category, expiry
+  const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' });
   const [calculations, setCalculations] = useState({ unitBase: 0, unitFinal: 0, finalStock: 0 });
 
   useEffect(() => {
     const costTotal = parseFloat(formData.inputCost) || 0;
     const qtyLote = parseFloat(formData.batchQty) || 0; 
-    const stockActual = parseFloat(formData.currentStock) || 0;
-    let unitBase = qtyLote > 0 ? costTotal / qtyLote : (modalMode === 'EDIT_DETAILS' && editingId ? (products.find(p=>p.id===editingId)?.cost || 0) : 0);
-    let unitFinal = formData.hasIva ? unitBase : unitBase * 1.21;
-    const finalStock = modalMode === 'RESTOCK' ? stockActual + qtyLote : (modalMode === 'CREATE' ? qtyLote : stockActual); 
+    let unitBase = 0;
+    if (qtyLote > 0) {
+        unitBase = costTotal / qtyLote;
+    } else if (modalMode === 'EDIT_DETAILS' && editingId) {
+        const p = products.find(p => p.id === editingId);
+        unitBase = p ? (p.hasIva ? p.cost : p.cost / 1.21) : 0;
+    }
+    const unitFinal = formData.hasIva ? unitBase : unitBase * 1.21;
+    let finalStock = formData.currentStock;
+    if (modalMode === 'RESTOCK') {
+        finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyLote;
+    }
     setCalculations({ unitBase, unitFinal, finalStock });
   }, [formData.inputCost, formData.batchQty, formData.currentStock, formData.hasIva, modalMode, editingId]);
 
@@ -527,26 +519,62 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const sellingPrice = Math.ceil(newCost * (1 + (formData.margin / 100)));
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
-    const productData = { isRestock: modalMode === 'RESTOCK', productId: editingId, addedStock, newCost, newPrice: sellingPrice, productName: formData.name, supplierName: formData.supplier, fullObject: { id: editingId || Date.now().toString(), name: formData.name, barcode: formData.barcode, stock: modalMode === 'CREATE' ? calculations.finalStock : formData.currentStock, minStock: parseInt(formData.minStock) || 5, cost: newCost, price: sellingPrice, hasIva: formData.hasIva, margin: parseFloat(formData.margin) } };
+    
+    // Objeto de Producto con los nuevos campos
+    const productData = { 
+        isRestock: modalMode === 'RESTOCK', 
+        productId: editingId, 
+        addedStock, 
+        newCost, 
+        newPrice: sellingPrice, 
+        productName: formData.name, 
+        supplierName: formData.supplier,
+        category: formData.category, // NEW
+        expiry: formData.expiry,     // NEW
+        fullObject: { 
+            id: editingId || Date.now().toString(), 
+            name: formData.name, 
+            barcode: formData.barcode, 
+            stock: Number(formData.currentStock),
+            minStock: parseInt(formData.minStock) || 5, 
+            cost: newCost, 
+            price: sellingPrice, 
+            hasIva: formData.hasIva, 
+            margin: parseFloat(formData.margin),
+            category: formData.category, // NEW
+            expiry: formData.expiry      // NEW
+        } 
+    };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
     else onProductTransaction(productData, financialData);
-    setShowPaymentModal(false); setIsFormOpen(false); setFormData({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '' }); setCalculations({ unitBase: 0, unitFinal: 0, finalStock: 0 });
+    
+    setShowPaymentModal(false); 
+    setIsFormOpen(false); 
+    setFormData({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' }); 
+    setCalculations({ unitBase: 0, unitFinal: 0, finalStock: 0 });
   };
 
   const startCreate = () => { setEditingId(null); setModalMode('CREATE'); setIsFormOpen(true); };
-  const startEditDetails = (p) => { setEditingId(p.id); setModalMode('EDIT_DETAILS'); setFormData({ name: p.name, barcode: p.barcode || '', inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock || 5, hasIva: p.hasIva, margin: p.margin || 50, supplier: '' }); setIsFormOpen(true); };
-  const startRestock = (p) => { setEditingId(p.id); setModalMode('RESTOCK'); setFormData({ name: p.name, barcode: p.barcode, inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock, hasIva: p.hasIva, margin: p.margin || 50, supplier: '' }); setIsFormOpen(true); }
+  const startEditDetails = (p) => { setEditingId(p.id); setModalMode('EDIT_DETAILS'); setFormData({ name: p.name, barcode: p.barcode || '', inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock || 5, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); };
+  const startRestock = (p) => { setEditingId(p.id); setModalMode('RESTOCK'); setFormData({ name: p.name, barcode: p.barcode, inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); }
 
   return (
     <div className="pb-20 animate-in">
-      <div className="flex justify-between items-center mb-6"><h2 className="text-xl font-bold text-gray-800">Inventario</h2><div className="flex gap-2"><Button onClick={onGenerateRestock} variant="secondary" icon={ClipboardList}>Faltantes</Button><Button variant="primary" onClick={startCreate} icon={Plus}>Nuevo</Button></div></div>
+      <div className="flex justify-between items-center mb-6"><h2 className="text-xl font-bold text-gray-800">Inventario</h2><div className="flex gap-2"><Button onClick={onGenerateRestock} variant="secondary" icon={AlertTriangle}>⚠️ Por Vencer</Button><Button variant="primary" onClick={startCreate} icon={Plus}>Nuevo</Button></div></div>
       {isFormOpen ? (
         <Card className="p-4 relative z-10">
           <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">{modalMode === 'RESTOCK' ? 'Reponer Stock' : 'Producto'}</h3><button onClick={() => setIsFormOpen(false)}><X size={20} /></button></div>
           <div className="space-y-4">
             {modalMode !== 'RESTOCK' && <><input className="w-full p-2 border rounded" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" /><div className="flex gap-2"><input className="w-full p-2 border rounded bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" /><Scan className="text-gray-400 mt-2"/></div></>}
-            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
+            
+            {/* Categoría y Vencimiento */}
+            <div className="flex gap-2">
+                <div className="flex-1"><label className="text-xs font-bold text-gray-500">Categoría</label><select className="w-full p-2 border rounded bg-white" value={formData.category} onChange={e=>setFormData({...formData, category:e.target.value})}><option>Varios</option><option>Bebidas</option><option>Golosinas</option><option>Almacén</option><option>Cigarrillos</option><option>Limpieza</option><option>Lácteos</option></select></div>
+                <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
+            </div>
+
+            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
             <hr/>
             <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
             <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
@@ -559,7 +587,40 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
           {showPaymentModal && <div className="absolute inset-0 bg-white/95 z-20 flex flex-col items-center justify-center p-4 rounded"><h3 className="font-bold mb-4">¿Estado del Pago?</h3><div className="space-y-3 w-full"><button onClick={() => processTransaction('PAID')} className="w-full p-3 border-green-500 border bg-green-50 rounded font-bold text-green-700">Se Pagó (Caja)</button><button onClick={() => processTransaction('OWED')} className="w-full p-3 border-red-500 border bg-red-50 rounded font-bold text-red-700">Se Debe (Cta. Cte.)</button></div><button onClick={() => setShowPaymentModal(false)} className="mt-4 text-gray-400">Cancelar</button></div>}
         </Card>
       ) : (
-        <div className="space-y-2">{products.map(p => <Card key={p.id} className={`p-3 flex justify-between ${p.stock<=p.minStock?'border-l-4 border-l-red-500':''}`}><div><div className="font-bold">{p.name}</div><div className="text-xs text-gray-500">Stock: {p.stock}</div></div><div className="flex flex-col items-end gap-1"><span className="font-bold text-green-600">${p.price}</span><div className="flex gap-1"><button onClick={()=>startRestock(p)} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs flex gap-1"><PackagePlus size={12}/> +Stock</button><button onClick={()=>startEditDetails(p)} className="text-gray-400 p-1"><Edit size={14}/></button>{user.role === 'admin' && <button onClick={()=>onDeleteProduct(p.id)} className="text-red-300 hover:text-red-500 p-1"><Trash2 size={14}/></button>}</div></div></Card>)}</div>
+        <div className="space-y-2">{products.map(p => {
+             const daysToExpiry = getDaysUntilExpiry(p.expiry);
+             const isExpired = daysToExpiry !== null && daysToExpiry < 0;
+             const isNearExpiry = daysToExpiry !== null && daysToExpiry >= 0 && daysToExpiry <= 7;
+             
+             return (
+              <Card key={p.id} className={`p-3 flex justify-between ${p.stock<=p.minStock ? 'border-l-4 border-l-red-500' : ''} ${isExpired ? 'bg-red-50' : ''}`}>
+                <div>
+                  <div className="flex items-center gap-2">
+                      <div className="font-bold">{p.name}</div>
+                      {p.category && <span className="text-[10px] bg-gray-100 px-1 rounded text-gray-500">{p.category}</span>}
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                     <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${p.stock <= p.minStock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>Stock: {p.stock}</span>
+                     <span className="text-xs text-gray-400">Costo: ${p.cost}</span>
+                  </div>
+                  {/* Alerta de Vencimiento */}
+                  {(isExpired || isNearExpiry) && (
+                      <div className={`text-xs flex items-center gap-1 mt-1 font-bold ${isExpired ? 'text-red-600' : 'text-amber-600'}`}>
+                          <AlertTriangle size={12}/> {isExpired ? 'VENCIDO' : `Vence en ${daysToExpiry} días`} ({p.expiry})
+                      </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 items-end">
+                  <div className="font-bold text-lg text-green-600">${p.price}</div>
+                  <div className="flex gap-2">
+                    <button onClick={()=>startRestock(p)} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs flex gap-1"><PackagePlus size={12}/> +Stock</button>
+                    <button onClick={()=>startEditDetails(p)} className="text-gray-400 p-1"><Edit size={14}/></button>
+                    {user.role === 'admin' && <button onClick={()=>onDeleteProduct(p.id)} className="text-red-300 hover:text-red-500 p-1"><Trash2 size={14}/></button>}
+                  </div>
+                </div>
+              </Card>
+             );
+          })}</div>
       )}
     </div>
   );
@@ -606,4 +667,4 @@ const StatsView = ({ sales }) => {
 const HistoryView = ({ closedShifts, setPrintData }) => <div className="space-y-2 pb-20"><h2 className="font-bold mb-4">Cajas Cerradas</h2>{closedShifts.map(s => <Card key={s.id} className="p-4 flex justify-between"><div><div className="font-bold text-gray-800">{new Date(s.date).toLocaleDateString()}</div><div className="text-xs text-gray-500">{s.cashier}</div></div><div className="text-right"><div className="font-bold text-green-600">${s.totals.revenue}</div><Button onClick={()=>setPrintData(s)} className="text-xs py-1 px-2 h-auto mt-1">Ver PDF</Button></div></Card>)}</div>;
 const SupplierPaymentModal = ({ onClose, onSave }) => { const [a, setA] = useState(''); const [s, setS] = useState(''); const [n, setN] = useState(''); return <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded w-full max-w-sm space-y-4"><h3 className="font-bold">Pago Proveedor</h3><input placeholder="Monto" type="number" className="w-full border p-2 rounded" onChange={e=>setA(e.target.value)}/><input placeholder="Proveedor" className="w-full border p-2 rounded" onChange={e=>setS(e.target.value)}/><input placeholder="Nota" className="w-full border p-2 rounded" onChange={e=>setN(e.target.value)}/><div className="flex gap-2"><Button onClick={onClose} variant="secondary" className="flex-1">Cancelar</Button><Button onClick={()=>onSave(a,s,n)} variant="danger" className="flex-1">Registrar</Button></div></div></div> };
 const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data.totals, null, 2)}</pre></div> };
-const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold text-red-600">Stock: {p.stock}</span></li>)}</ul></div> };
+const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición - {new Date().toLocaleDateString()}</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><div><span className="block font-bold">{p.name}</span><span className="text-xs text-gray-500">{p.barcode}</span></div><div className="text-right"><span className="font-bold text-red-600 block">Stock: {p.stock}</span><span className="text-xs text-gray-400">Min: {p.minStock}</span></div></li>)}</ul></div> };
