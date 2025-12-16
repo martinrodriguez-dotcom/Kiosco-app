@@ -253,11 +253,6 @@ export default function KioscoSystem() {
         expiry: productData.expiry || '',
       };
       
-      // LÓGICA ESTRICTA:
-      // Si es reposición (RESTOCK), debe existir el ID. Si no existe, ERROR. Nunca crear nuevo.
-      // Si es creación (CREATE), no debe tener ID previo o se genera uno nuevo.
-      // Si es edición (EDIT_DETAILS), debe existir el ID.
-
       if (isRestock) {
         if (!productId) {
             alert("Error Crítico: No se identificó el producto para reponer.");
@@ -266,9 +261,8 @@ export default function KioscoSystem() {
         
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // Usamos 'update' en lugar de 'set' para asegurar que el documento exista.
-        // Si no existe, fallará, lo cual es correcto porque no queremos crear fantasmas.
-        // Usamos 'increment' para sumar al stock existente en la base de datos.
+        // REPOSICIÓN: Actualiza campos y suma stock
+        // NO crea documentos nuevos.
         batch.update(productRef, {
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
@@ -520,14 +514,13 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   );
 };
 
-// --- PRODUCT MANAGER (UPDATED: NEW FIELDS + ALERTS) ---
+// --- PRODUCT MANAGER (UPDATED: FIXED UI AND LOGIC) ---
 const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onProductTransaction, onDeleteProduct }) => {
   const [editingId, setEditingId] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [modalMode, setModalMode] = useState('CREATE'); 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
-  // Agregados campos: category, expiry
   const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' });
   const [calculations, setCalculations] = useState({ unitBase: 0, unitFinal: 0, finalStock: 0 });
 
@@ -535,17 +528,24 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const costTotal = parseFloat(formData.inputCost) || 0;
     const qtyLote = parseFloat(formData.batchQty) || 0; 
     let unitBase = 0;
+    
+    // Si hay lote, calculamos sobre el lote
     if (qtyLote > 0) {
         unitBase = costTotal / qtyLote;
     } else if (modalMode === 'EDIT_DETAILS' && editingId) {
+        // Si no hay lote (edición de detalles), usamos el costo actual
         const p = products.find(p => p.id === editingId);
         unitBase = p ? (p.hasIva ? p.cost : p.cost / 1.21) : 0;
     }
+    
     const unitFinal = formData.hasIva ? unitBase : unitBase * 1.21;
+    
+    // Cálculo de stock proyectado para la UI
     let finalStock = formData.currentStock;
-    if (modalMode === 'RESTOCK') {
+    if (modalMode === 'RESTOCK' && editingId) {
         finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyLote;
     }
+
     setCalculations({ unitBase, unitFinal, finalStock });
   }, [formData.inputCost, formData.batchQty, formData.currentStock, formData.hasIva, modalMode, editingId]);
 
@@ -561,7 +561,6 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
     
-    // Objeto de Producto con los nuevos campos
     const productData = { 
         isRestock: modalMode === 'RESTOCK', 
         productId: editingId, 
@@ -570,23 +569,24 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
         newPrice: sellingPrice, 
         productName: formData.name, 
         supplierName: formData.supplier,
-        category: formData.category, // NEW
-        expiry: formData.expiry,     // NEW
+        category: formData.category, 
+        expiry: formData.expiry,
         fullObject: { 
             id: editingId || Date.now().toString(), 
             name: formData.name, 
             barcode: formData.barcode, 
-            stock: Number(formData.currentStock),
+            stock: Number(formData.currentStock), // En CREATE usa esto
             minStock: parseInt(formData.minStock) || 5, 
             cost: newCost, 
             price: sellingPrice, 
             hasIva: formData.hasIva, 
             margin: parseFloat(formData.margin),
-            category: formData.category, // NEW
-            expiry: formData.expiry      // NEW
+            category: formData.category,
+            expiry: formData.expiry
         } 
     };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
+    
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
     else onProductTransaction(productData, financialData);
     
@@ -597,8 +597,44 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
   };
 
   const startCreate = () => { setEditingId(null); setModalMode('CREATE'); setIsFormOpen(true); };
-  const startEditDetails = (p) => { setEditingId(p.id); setModalMode('EDIT_DETAILS'); setFormData({ name: p.name, barcode: p.barcode || '', inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock || 5, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); };
-  const startRestock = (p) => { setEditingId(p.id); setModalMode('RESTOCK'); setFormData({ name: p.name, barcode: p.barcode, inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); }
+  
+  const startEditDetails = (p) => { 
+    setEditingId(p.id); 
+    setModalMode('EDIT_DETAILS'); 
+    setFormData({ 
+        name: p.name, 
+        barcode: p.barcode || '', 
+        inputCost: '', // Limpio porque no es reposición
+        batchQty: '', 
+        currentStock: p.stock, 
+        minStock: p.minStock || 5, 
+        hasIva: p.hasIva, 
+        margin: p.margin || 50, 
+        supplier: '', 
+        category: p.category || 'Varios', 
+        expiry: p.expiry || '' 
+    }); 
+    setIsFormOpen(true); 
+  };
+  
+  const startRestock = (p) => { 
+    setEditingId(p.id); 
+    setModalMode('RESTOCK'); 
+    setFormData({ 
+        name: p.name, 
+        barcode: p.barcode, 
+        inputCost: '', 
+        batchQty: '', 
+        currentStock: p.stock, 
+        minStock: p.minStock, 
+        hasIva: p.hasIva, 
+        margin: p.margin || 50, 
+        supplier: '', 
+        category: p.category || 'Varios', 
+        expiry: p.expiry || '' 
+    }); 
+    setIsFormOpen(true); 
+  }
 
   return (
     <div className="pb-20 animate-in">
@@ -609,13 +645,12 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
           <div className="space-y-4">
             {modalMode !== 'RESTOCK' && <><input className="w-full p-2 border rounded" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" /><div className="flex gap-2"><input className="w-full p-2 border rounded bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" /><Scan className="text-gray-400 mt-2"/></div></>}
             
-            {/* Categoría y Vencimiento */}
             <div className="flex gap-2">
                 <div className="flex-1"><label className="text-xs font-bold text-gray-500">Categoría</label><select className="w-full p-2 border rounded bg-white" value={formData.category} onChange={e=>setFormData({...formData, category:e.target.value})}><option>Varios</option><option>Bebidas</option><option>Golosinas</option><option>Almacén</option><option>Cigarrillos</option><option>Limpieza</option><option>Lácteos</option></select></div>
                 <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
             </div>
 
-            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
+            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
             <hr/>
             <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
             <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
@@ -632,38 +667,19 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
              const daysToExpiry = getDaysUntilExpiry(p.expiry);
              const isExpired = daysToExpiry !== null && daysToExpiry < 0;
              const isNearExpiry = daysToExpiry !== null && daysToExpiry >= 0 && daysToExpiry <= 15;
-             
              return (
               <Card key={p.id} className={`p-3 flex justify-between ${p.stock<=p.minStock ? 'border-l-4 border-l-red-500' : ''} ${isExpired ? 'bg-red-50' : ''}`}>
                 <div>
-                  <div className="flex items-center gap-2">
-                      <div className="font-bold">{p.name}</div>
-                      {p.category && <span className="text-[10px] bg-gray-100 px-1 rounded text-gray-500">{p.category}</span>}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                     <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${p.stock <= p.minStock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>Stock: {p.stock}</span>
-                     <span className="text-xs text-gray-400">Costo: ${p.cost}</span>
-                  </div>
-                  {/* Alerta de Vencimiento */}
-                  {(isExpired || isNearExpiry) && (
-                      <div className={`text-xs flex items-center gap-1 mt-1 font-bold ${isExpired ? 'text-red-600' : 'text-amber-600'}`}>
-                          <AlertTriangle size={12}/> {isExpired ? 'VENCIDO' : `Vence en ${daysToExpiry} días`} ({p.expiry})
-                      </div>
-                  )}
+                  <div className="flex items-center gap-2"><div className="font-bold">{p.name}</div>{p.category && <span className="text-[10px] bg-gray-100 px-1 rounded text-gray-500">{p.category}</span>}</div>
+                  <div className="flex items-center gap-2 mt-1"><span className={`text-xs px-2 py-0.5 rounded-full font-bold ${p.stock <= p.minStock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>Stock: {p.stock}</span><span className="text-xs text-gray-400">Costo: ${p.cost}</span></div>
+                  {(isExpired || isNearExpiry) && (<div className={`text-xs flex items-center gap-1 mt-1 font-bold ${isExpired ? 'text-red-600' : 'text-amber-600'}`}><AlertTriangle size={12}/> {isExpired ? 'VENCIDO' : `Vence en ${daysToExpiry} días`} ({p.expiry})</div>)}
                 </div>
                 <div className="flex flex-col gap-2 items-end">
                   <div className="font-bold text-lg text-green-600">${p.price}</div>
                   <div className="flex gap-2">
                     <button onClick={()=>startRestock(p)} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs flex gap-1"><PackagePlus size={12}/> +Stock</button>
                     <button onClick={()=>startEditDetails(p)} className="text-gray-400 p-1"><Edit size={14}/></button>
-                    {user.role === 'admin' && (
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onDeleteProduct(p.id); }} 
-                            className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-200"
-                        >
-                            <Trash2 size={14}/>
-                        </button>
-                    )}
+                    {user.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); onDeleteProduct(p.id); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-200"><Trash2 size={14}/></button>}
                   </div>
                 </div>
               </Card>
