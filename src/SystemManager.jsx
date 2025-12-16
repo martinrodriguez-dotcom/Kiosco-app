@@ -245,8 +245,8 @@ export default function KioscoSystem() {
     try {
       const batch = writeBatch(db);
       const dataToUpdate = {
-        category: productData.category || 'Varios', // Nueva funcionalidad: Categoría
-        expiry: productData.expiry || '',           // Nueva funcionalidad: Vencimiento
+        category: productData.category || 'Varios', 
+        expiry: productData.expiry || '',
       };
       
       if (isRestock) {
@@ -379,7 +379,7 @@ export default function KioscoSystem() {
 
       <div className="max-w-4xl mx-auto p-4">
         {view === 'pos' && <POSView products={products} cart={cart} setCart={setCart} onCheckout={handleCheckout} onSeed={seedDatabase} />}
-        {view === 'products' && <ProductManager products={products} user={userData} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock||(p.expiry && getDaysUntilExpiry(p.expiry)<=7)); if(list.length) setRestockData(list); else alert("Todo OK. Sin alertas."); }} onProductTransaction={handleProductTransaction} onDeleteProduct={handleDeleteProduct} />}
+        {view === 'products' && <ProductManager products={products} user={userData} onRequestAuth={requestAuthorization} onGenerateRestock={() => { const list = products.filter(p=>p.stock<=p.minStock||(p.expiry && getDaysUntilExpiry(p.expiry)<=15)); if(list.length) setRestockData(list); else alert("Todo OK. Sin alertas."); }} onProductTransaction={handleProductTransaction} onDeleteProduct={handleDeleteProduct} />}
         {view === 'shift' && <ShiftManager sales={sales} payments={payments} user={userData} shiftData={currentShiftData} onCloseShift={closeShift} onDeleteSale={handleDeleteSale} onOpenShift={handleManualOpenShift} />}
         {view === 'stats' && <StatsView sales={closedShifts.flatMap(s => s.sales).concat(sales)} />}
         {view === 'history' && <HistoryView closedShifts={closedShifts} setPrintData={setPrintData} />}
@@ -559,6 +559,15 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
   const startEditDetails = (p) => { setEditingId(p.id); setModalMode('EDIT_DETAILS'); setFormData({ name: p.name, barcode: p.barcode || '', inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock || 5, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); };
   const startRestock = (p) => { setEditingId(p.id); setModalMode('RESTOCK'); setFormData({ name: p.name, barcode: p.barcode, inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); }
 
+  // Helper para vencimiento
+  const getDaysUntilExpiry = (dateString) => {
+    if (!dateString) return null;
+    const today = new Date();
+    const expiry = new Date(dateString);
+    const diffTime = expiry - today;
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+  };
+
   return (
     <div className="pb-20 animate-in">
       <div className="flex justify-between items-center mb-6"><h2 className="text-xl font-bold text-gray-800">Inventario</h2><div className="flex gap-2"><Button onClick={onGenerateRestock} variant="secondary" icon={AlertTriangle}>⚠️ Por Vencer</Button><Button variant="primary" onClick={startCreate} icon={Plus}>Nuevo</Button></div></div>
@@ -590,7 +599,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
         <div className="space-y-2">{products.map(p => {
              const daysToExpiry = getDaysUntilExpiry(p.expiry);
              const isExpired = daysToExpiry !== null && daysToExpiry < 0;
-             const isNearExpiry = daysToExpiry !== null && daysToExpiry >= 0 && daysToExpiry <= 7;
+             const isNearExpiry = daysToExpiry !== null && daysToExpiry >= 0 && daysToExpiry <= 15;
              
              return (
               <Card key={p.id} className={`p-3 flex justify-between ${p.stock<=p.minStock ? 'border-l-4 border-l-red-500' : ''} ${isExpired ? 'bg-red-50' : ''}`}>
@@ -667,4 +676,4 @@ const StatsView = ({ sales }) => {
 const HistoryView = ({ closedShifts, setPrintData }) => <div className="space-y-2 pb-20"><h2 className="font-bold mb-4">Cajas Cerradas</h2>{closedShifts.map(s => <Card key={s.id} className="p-4 flex justify-between"><div><div className="font-bold text-gray-800">{new Date(s.date).toLocaleDateString()}</div><div className="text-xs text-gray-500">{s.cashier}</div></div><div className="text-right"><div className="font-bold text-green-600">${s.totals.revenue}</div><Button onClick={()=>setPrintData(s)} className="text-xs py-1 px-2 h-auto mt-1">Ver PDF</Button></div></Card>)}</div>;
 const SupplierPaymentModal = ({ onClose, onSave }) => { const [a, setA] = useState(''); const [s, setS] = useState(''); const [n, setN] = useState(''); return <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded w-full max-w-sm space-y-4"><h3 className="font-bold">Pago Proveedor</h3><input placeholder="Monto" type="number" className="w-full border p-2 rounded" onChange={e=>setA(e.target.value)}/><input placeholder="Proveedor" className="w-full border p-2 rounded" onChange={e=>setS(e.target.value)}/><input placeholder="Nota" className="w-full border p-2 rounded" onChange={e=>setN(e.target.value)}/><div className="flex gap-2"><Button onClick={onClose} variant="secondary" className="flex-1">Cancelar</Button><Button onClick={()=>onSave(a,s,n)} variant="danger" className="flex-1">Registrar</Button></div></div></div> };
 const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data.totals, null, 2)}</pre></div> };
-const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición - {new Date().toLocaleDateString()}</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><div><span className="block font-bold">{p.name}</span><span className="text-xs text-gray-500">{p.barcode}</span></div><div className="text-right"><span className="font-bold text-red-600 block">Stock: {p.stock}</span><span className="text-xs text-gray-400">Min: {p.minStock}</span></div></li>)}</ul></div> };
+const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold text-red-600">Stock: {p.stock}</span></li>)}</ul></div> };
