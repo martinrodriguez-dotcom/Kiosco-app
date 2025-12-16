@@ -236,39 +236,80 @@ export default function KioscoSystem() {
   const handleManualOpenShift = () => setShowShiftStartModal(true);
   const handleReloadData = () => window.location.reload();
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
+  
+  // Función de Reset (Limpieza de Fábrica) - Sin duplicados, esta borra todo
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES ---
+  // --- TRANSACCIONES ESTRICTAS (SIN DUPLICADOS) ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
+
     try {
       const batch = writeBatch(db);
+      
       const dataToUpdate = {
         category: productData.category || 'Varios', 
         expiry: productData.expiry || '',
       };
       
+      // LÓGICA ESTRICTA:
+      // Si es reposición (RESTOCK), debe existir el ID. Si no existe, ERROR. Nunca crear nuevo.
+      // Si es creación (CREATE), no debe tener ID previo o se genera uno nuevo.
+      // Si es edición (EDIT_DETAILS), debe existir el ID.
+
       if (isRestock) {
-        if (!productId) throw new Error("ID perdido en reposición");
+        if (!productId) {
+            alert("Error Crítico: No se identificó el producto para reponer.");
+            return;
+        }
+        
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-        batch.set(productRef, {
+        
+        // Usamos 'update' en lugar de 'set' para asegurar que el documento exista.
+        // Si no existe, fallará, lo cual es correcto porque no queremos crear fantasmas.
+        // Usamos 'increment' para sumar al stock existente en la base de datos.
+        batch.update(productRef, {
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
-        }, { merge: true });
+        });
+
       } else {
-        const ref = productId ? doc(db, 'tiendas', STORE_ID, 'products', productId) : doc(collection(db, 'tiendas', STORE_ID, 'products'));
-        batch.set(ref, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
+        // Create or Edit Details
+        if (productId) {
+             // Editando detalles de un producto existente
+             const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
+             batch.update(productRef, { ...productData.fullObject, ...dataToUpdate });
+        } else {
+             // Creando uno nuevo desde cero
+             const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
+             batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
+        }
       }
+
+      // Lógica Financiera
       if (totalCost > 0) {
           const col = paymentStatus === 'PAID' ? 'payments' : 'debts';
           const ref = doc(collection(db, 'tiendas', STORE_ID, col));
-          batch.set(ref, { date: new Date().toISOString(), amount: totalCost, supplier: productData.supplierName || 'General', note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial`, user: userData.name, status: paymentStatus==='PAID'?'open':'PENDING', ...(paymentStatus==='OWED' && {productName: productData.productName, qty: addedStock}) });
+          batch.set(ref, { 
+              date: new Date().toISOString(), 
+              amount: totalCost, 
+              supplier: productData.supplierName || 'General', 
+              note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial`, 
+              user: userData.name, 
+              status: paymentStatus==='PAID'?'open':'PENDING', 
+              ...(paymentStatus==='OWED' && {productName: productData.productName, qty: addedStock}) 
+          });
       }
+      
       await batch.commit();
-    } catch (e) { alert("Error: " + e.message); }
+      
+    } catch (e) { 
+        console.error(e);
+        alert("Error en la operación: " + e.message); 
+    }
   };
 
   const handleCheckout = async (total, items, method) => {
@@ -559,15 +600,6 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
   const startEditDetails = (p) => { setEditingId(p.id); setModalMode('EDIT_DETAILS'); setFormData({ name: p.name, barcode: p.barcode || '', inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock || 5, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); };
   const startRestock = (p) => { setEditingId(p.id); setModalMode('RESTOCK'); setFormData({ name: p.name, barcode: p.barcode, inputCost: '', batchQty: '', currentStock: p.stock, minStock: p.minStock, hasIva: p.hasIva, margin: p.margin || 50, supplier: '', category: p.category || 'Varios', expiry: p.expiry || '' }); setIsFormOpen(true); }
 
-  // Helper para vencimiento
-  const getDaysUntilExpiry = (dateString) => {
-    if (!dateString) return null;
-    const today = new Date();
-    const expiry = new Date(dateString);
-    const diffTime = expiry - today;
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-  };
-
   return (
     <div className="pb-20 animate-in">
       <div className="flex justify-between items-center mb-6"><h2 className="text-xl font-bold text-gray-800">Inventario</h2><div className="flex gap-2"><Button onClick={onGenerateRestock} variant="secondary" icon={AlertTriangle}>⚠️ Por Vencer</Button><Button variant="primary" onClick={startCreate} icon={Plus}>Nuevo</Button></div></div>
@@ -624,7 +656,14 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateRestock, onPr
                   <div className="flex gap-2">
                     <button onClick={()=>startRestock(p)} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs flex gap-1"><PackagePlus size={12}/> +Stock</button>
                     <button onClick={()=>startEditDetails(p)} className="text-gray-400 p-1"><Edit size={14}/></button>
-                    {user.role === 'admin' && <button onClick={()=>onDeleteProduct(p.id)} className="text-red-300 hover:text-red-500 p-1"><Trash2 size={14}/></button>}
+                    {user.role === 'admin' && (
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onDeleteProduct(p.id); }} 
+                            className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-200"
+                        >
+                            <Trash2 size={14}/>
+                        </button>
+                    )}
                   </div>
                 </div>
               </Card>
