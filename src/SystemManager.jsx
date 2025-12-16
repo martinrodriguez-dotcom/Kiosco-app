@@ -240,7 +240,7 @@ export default function KioscoSystem() {
 
   // --- TRANSACCIONES BLINDADAS ---
   const handleProductTransaction = async (productData, financialData) => {
-    const { isRestock, productId, addedStock } = productData;
+    const { isRestock, productId, addedStock, packageSize, packageCost } = productData;
     const { totalCost, paymentStatus } = financialData; 
 
     try {
@@ -252,24 +252,38 @@ export default function KioscoSystem() {
       };
       
       if (isRestock) {
+        // REPOSICIÓN: Actualiza stock y precios de un producto EXISTENTE.
         if (!productId) {
-            alert("Error Crítico: ID de producto no encontrado. Recarga la app.");
+            alert("Error Crítico: ID de producto no encontrado.");
             return;
         }
+
+        // Buscar producto actual en la lista local para comparar costos
+        const currentProd = products.find(p => p.id === productId);
+        if (!currentProd) {
+            alert("El producto que intentas reponer no existe en la base de datos.");
+            return;
+        }
+
+        // CÁLCULO DE COSTO Y PRECIO (Lógica de "El Mayor Manda")
+        // 1. Calculamos el costo unitario de esta reposición nueva
+        const newUnitCost = Number(packageCost) / Number(packageSize);
         
+        // 2. Comparamos con el costo viejo
+        const oldCost = Number(currentProd.cost);
+        const finalCost = newUnitCost > oldCost ? newUnitCost : oldCost;
+
+        // 3. Recalculamos precio de venta basado en el costo final y el margen original
+        const finalPrice = Math.ceil(finalCost * (1 + (Number(currentProd.margin) / 100)));
+
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // AQUÍ ESTÁ LA MAGIA: 
-        // Usamos ...productData.fullObject para asegurar que SIEMPRE viaje el nombre y el código.
-        // Pero sobreescribimos el 'stock' con el 'increment' para que la suma sea sagrada.
-        // Así, si el producto existía, suma. Si no existía, lo crea completo con el stock inicial correcto.
-        batch.set(productRef, {
-            ...productData.fullObject, 
+        batch.update(productRef, {
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
-            cost: Number(productData.newCost),
-            price: Number(productData.newPrice)
-        }, { merge: true });
+            cost: Number(finalCost),
+            price: Number(finalPrice)
+        });
 
       } else {
         // Create or Edit Details
@@ -282,7 +296,8 @@ export default function KioscoSystem() {
         }
       }
 
-      // Lógica Financiera
+      // Lógica Financiera (Registro del gasto)
+      // Se registra el monto que salió de la caja o deuda por ESTA compra específica
       if (totalCost > 0) {
           const col = paymentStatus === 'PAID' ? 'payments' : 'debts';
           const ref = doc(collection(db, 'tiendas', STORE_ID, col));
@@ -312,8 +327,7 @@ export default function KioscoSystem() {
         batch.set(saleRef, { date: new Date().toISOString(), total, items, method, user: userData.name, status: 'open' });
         items.forEach(item => {
             const prodRef = doc(db, 'tiendas', STORE_ID, 'products', item.id);
-            // Usar set merge con increment negativo para restar seguro
-            batch.set(prodRef, { stock: increment(-Number(item.qty)) }, { merge: true });
+            batch.update(prodRef, { stock: increment(-Number(item.qty)) });
         });
         await batch.commit();
         setCart([]);
@@ -535,48 +549,89 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   );
 };
 
-// --- PRODUCT MANAGER (UPDATED: NEW FIELDS + ALERTS) ---
+// --- PRODUCT MANAGER (UPDATED: FIXED REPO LOGIC) ---
 const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onGenerateExpiry, onProductTransaction, onDeleteProduct }) => {
   const [editingId, setEditingId] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [modalMode, setModalMode] = useState('CREATE'); 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
-  // Agregados campos: category, expiry
-  const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' });
+  // Agregados campos: packageSize (cantidad bulto), batchQty (cantidad comprada)
+  const [formData, setFormData] = useState({ 
+      name: '', barcode: '', inputCost: '', packageSize: '1', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' 
+  });
   const [calculations, setCalculations] = useState({ unitBase: 0, unitFinal: 0, finalStock: 0 });
 
   useEffect(() => {
     const costTotal = parseFloat(formData.inputCost) || 0;
-    const qtyLote = parseFloat(formData.batchQty) || 0; 
+    const unitsPerPack = parseFloat(formData.packageSize) || 1;
+    const qtyPurchased = parseFloat(formData.batchQty) || 0; // Unidades sueltas compradas
+    
+    // 1. Cálculo de Costo Unitario
+    // Si estamos reponiendo o creando, el costo unitario se deriva del (Costo Total / Unidades en ese Pack)
+    // PERO: Si compro 8 unidades sueltas, ¿el costo total es por las 8? Asumimos que inputCost es el TOTAL FACTURA.
+    // Si es bulto cerrado: Costo Bulto / Unidades Bulto = Costo Unitario.
+    // Si compro unidades sueltas: Costo Total / Unidades Compradas = Costo Unitario.
+    
+    // Lógica pedida: "costo dividido las cantidad de unidades que trae"
+    // Interpretación: Input "Costo Nuevo" se refiere al precio del Bulto/Caja Cerrada o al total pagado por las unidades.
+    // Usaremos: Costo Total Pagado / Cantidad de Unidades Compradas = Costo Unitario de esta compra.
+    
     let unitBase = 0;
-    if (qtyLote > 0) {
-        unitBase = costTotal / qtyLote;
+    // Si estoy comprando algo (batchQty > 0)
+    if (qtyPurchased > 0) {
+        // Opción A: inputCost es el costo del bulto entero (ej $10000 por 10), pero compré 8.
+        // Opción B: inputCost es lo que pagué por esas 8 ($8000).
+        // Para simplificar y hacerlo flexible: "Costo Total de la Compra" / "Cantidad de Unidades Compradas".
+        // Si el usuario pone Costo Pack $10000 y Cantidad 10 -> Unitario $1000.
+        unitBase = costTotal / qtyPurchased;
     } else if (modalMode === 'EDIT_DETAILS' && editingId) {
         const p = products.find(p => p.id === editingId);
         unitBase = p ? (p.hasIva ? p.cost : p.cost / 1.21) : 0;
     }
+
     const unitFinal = formData.hasIva ? unitBase : unitBase * 1.21;
+    
+    // Stock Proyectado (Solo visual)
     let finalStock = formData.currentStock;
-    if (modalMode === 'RESTOCK') {
-        finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyLote;
+    if (modalMode === 'RESTOCK' && editingId) {
+        finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyPurchased;
+    } else if (modalMode === 'CREATE') {
+        finalStock = qtyPurchased;
     }
+
     setCalculations({ unitBase, unitFinal, finalStock });
-  }, [formData.inputCost, formData.batchQty, formData.currentStock, formData.hasIva, modalMode, editingId]);
+  }, [formData.inputCost, formData.batchQty, formData.packageSize, formData.currentStock, formData.hasIva, modalMode, editingId]);
 
   const handleInitialSave = () => {
       if (!formData.name) return alert("Nombre requerido");
+      // Validación extra para reposición
+      if (modalMode === 'RESTOCK' && (!formData.inputCost || !formData.batchQty)) return alert("Ingrese Costo y Cantidad para reponer.");
+      
       if (modalMode === 'EDIT_DETAILS') { processTransaction('NO_COST'); return; }
       setShowPaymentModal(true);
   }
 
   const processTransaction = (paymentStatus) => { 
-    const newCost = parseFloat(calculations.unitFinal.toFixed(2));
+    // Lógica "El Mayor Manda" (Inflación)
+    let newCost = parseFloat(calculations.unitFinal.toFixed(2));
+    
+    // Si es reposición, comparamos con el costo anterior
+    if (modalMode === 'RESTOCK' && editingId) {
+        const currentProd = products.find(p => p.id === editingId);
+        if (currentProd) {
+            const oldCost = Number(currentProd.cost);
+            // Si el nuevo costo es menor, nos quedamos con el viejo (el mayor).
+            if (newCost < oldCost) {
+                newCost = oldCost;
+            }
+        }
+    }
+
     const sellingPrice = Math.ceil(newCost * (1 + (formData.margin / 100)));
     const addedStock = parseFloat(formData.batchQty) || 0;
     const totalCost = parseFloat(formData.inputCost) || 0;
     
-    // Objeto de Producto con los nuevos campos
     const productData = { 
         isRestock: modalMode === 'RESTOCK', 
         productId: editingId, 
@@ -585,20 +640,20 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
         newPrice: sellingPrice, 
         productName: formData.name, 
         supplierName: formData.supplier,
-        category: formData.category, // NEW
-        expiry: formData.expiry,     // NEW
+        category: formData.category, 
+        expiry: formData.expiry,
         fullObject: { 
             id: editingId || Date.now().toString(), 
             name: formData.name, 
             barcode: formData.barcode, 
-            stock: Number(formData.currentStock),
+            stock: modalMode === 'CREATE' ? addedStock : Number(formData.currentStock), // En create usamos lo comprado
             minStock: parseInt(formData.minStock) || 5, 
             cost: newCost, 
             price: sellingPrice, 
             hasIva: formData.hasIva, 
             margin: parseFloat(formData.margin),
-            category: formData.category, // NEW
-            expiry: formData.expiry      // NEW
+            category: formData.category,
+            expiry: formData.expiry
         } 
     };
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
@@ -607,11 +662,12 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
     
     setShowPaymentModal(false); 
     setIsFormOpen(false); 
+    // Reset form
     setFormData({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' }); 
     setCalculations({ unitBase: 0, unitFinal: 0, finalStock: 0 });
   };
 
-  const startCreate = () => { setEditingId(null); setModalMode('CREATE'); setIsFormOpen(true); };
+  const startCreate = () => { setEditingId(null); setModalMode('CREATE'); setFormData({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' }); setIsFormOpen(true); };
   
   const startEditDetails = (p) => { 
     setEditingId(p.id); 
@@ -619,7 +675,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
     setFormData({ 
         name: p.name, 
         barcode: p.barcode || '', 
-        inputCost: '', // Limpio porque no es reposición
+        inputCost: '', 
         batchQty: '', 
         currentStock: p.stock, 
         minStock: p.minStock || 5, 
@@ -636,11 +692,11 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
     setEditingId(p.id); 
     setModalMode('RESTOCK'); 
     setFormData({ 
-        name: p.name, 
+        name: p.name, // Nombre fijo
         barcode: p.barcode, 
-        inputCost: '', 
-        batchQty: '', 
-        currentStock: p.stock, 
+        inputCost: '', // Limpio para ingreso nuevo
+        batchQty: '',  // Limpio para ingreso nuevo
+        currentStock: p.stock, // Solo lectura
         minStock: p.minStock, 
         hasIva: p.hasIva, 
         margin: p.margin || 50, 
@@ -663,25 +719,79 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
       </div>
       {isFormOpen ? (
         <Card className="p-4 relative z-10">
-          <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">{modalMode === 'RESTOCK' ? 'Reponer Stock' : 'Producto'}</h3><button onClick={() => setIsFormOpen(false)}><X size={20} /></button></div>
+          <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">{modalMode === 'RESTOCK' ? 'Reponer Stock' : (modalMode === 'CREATE' ? 'Nuevo Producto' : 'Editar Detalles')}</h3><button onClick={() => setIsFormOpen(false)}><X size={20} /></button></div>
           <div className="space-y-4">
-            {modalMode !== 'RESTOCK' && <><input className="w-full p-2 border rounded" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" /><div className="flex gap-2"><input className="w-full p-2 border rounded bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" /><Scan className="text-gray-400 mt-2"/></div></>}
             
-            {/* Categoría y Vencimiento */}
-            <div className="flex gap-2">
-                <div className="flex-1"><label className="text-xs font-bold text-gray-500">Categoría</label><select className="w-full p-2 border rounded bg-white" value={formData.category} onChange={e=>setFormData({...formData, category:e.target.value})}><option>Varios</option><option>Bebidas</option><option>Golosinas</option><option>Almacén</option><option>Cigarrillos</option><option>Limpieza</option><option>Lácteos</option></select></div>
-                <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
+            {/* Nombre y Código (Solo lectura en Reposición) */}
+            <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
+                <input className="w-full p-2 border rounded-lg bg-gray-50" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" disabled={modalMode === 'RESTOCK'} />
+            </div>
+            
+            {modalMode !== 'RESTOCK' && (
+                <div className="flex gap-2">
+                    <input className="w-full p-2 border rounded-lg bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" />
+                    <div className="p-2 bg-gray-100 rounded text-gray-500"><Scan size={20}/></div>
+                </div>
+            )}
+            
+            {/* Stock Actual (Siempre solo lectura en formularios, salvo creación inicial manual) */}
+            {modalMode !== 'CREATE' && (
+                 <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between">
+                     <span className="text-sm text-blue-800 font-bold">Stock Actual:</span>
+                     <span className="text-sm text-blue-600 font-bold">{formData.currentStock} u.</span>
+                 </div>
+            )}
+
+            {/* Formulario de Costos y Cantidades (Solo para Create y Restock) */}
+            {modalMode !== 'EDIT_DETAILS' && (
+                <>
+                <hr className="border-gray-100"/>
+                <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">Datos de Compra</span></div>
+                
+                <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
+                
+                <div className="grid grid-cols-2 gap-2">
+                    <div>
+                        <label className="text-xs font-bold text-gray-500">Costo Total Compra</label>
+                        <input type="number" className="w-full p-2 border rounded font-bold" placeholder="$0.00" value={formData.inputCost} onChange={e => setFormData({...formData, inputCost: e.target.value})} autoFocus={modalMode === 'RESTOCK'} />
+                    </div>
+                    <div>
+                        <label className="text-xs font-bold text-gray-500">Unidades Compradas</label>
+                        <input type="number" className="w-full p-2 border rounded font-bold" placeholder="0" value={formData.batchQty} onChange={e => setFormData({...formData, batchQty: e.target.value})} />
+                    </div>
+                </div>
+
+                <div className="bg-gray-100 p-2 rounded text-center grid grid-cols-2 gap-2 mt-2">
+                    <div><div className="text-[10px] font-bold text-gray-500">Costo Unit. Nuevo</div><div className="font-bold text-blue-600">${calculations.unitFinal.toFixed(2)}</div></div>
+                    {/* Visualización de la lógica "Mayor Manda" */}
+                    {modalMode === 'RESTOCK' && calculations.unitFinal < (products.find(p=>p.id===editingId)?.cost||0) && (
+                        <div className="col-span-2 text-[10px] text-amber-600 bg-amber-50 p-1 rounded">⚠️ El costo nuevo es menor. Se mantendrá el costo anterior (${products.find(p=>p.id===editingId)?.cost}) por seguridad.</div>
+                    )}
+                </div>
+                </>
+            )}
+
+            {/* Configuración de Precios (Siempre visible para ajustar margen) */}
+            <div className="grid grid-cols-2 gap-2 border-t pt-2">
+                <div><label className="text-xs">Margen %</label><input type="number" className="w-full p-1 border rounded" value={formData.margin} onChange={e => setFormData({...formData, margin: e.target.value})} /></div>
+                <div>
+                    <label className="text-xs">Precio Venta</label>
+                    <div className="w-full p-1 bg-green-100 font-bold text-center rounded">
+                        ${Math.ceil(
+                            // Previsualizar precio final usando la lógica "Mayor Manda"
+                            (modalMode === 'RESTOCK' 
+                                ? Math.max(calculations.unitFinal, (products.find(p=>p.id===editingId)?.cost||0)) 
+                                : calculations.unitFinal
+                            ) * (1 + (formData.margin / 100))
+                        )}
+                    </div>
+                </div>
             </div>
 
-            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
-            <hr/>
-            <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
-            <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
-            <div className="grid grid-cols-2 gap-2"><input type="number" className="p-2 border rounded" placeholder="Costo Total $" value={formData.inputCost} onChange={e => setFormData({...formData, inputCost: e.target.value})} /><input type="number" className="p-2 border rounded" placeholder="Cant. Unidades" value={formData.batchQty} onChange={e => setFormData({...formData, batchQty: e.target.value})} /></div>
-            <div className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={formData.hasIva} onChange={e => setFormData({...formData, hasIva: e.target.checked})} /> Costo incluye IVA</div>
-            <div className="bg-blue-50 p-2 rounded text-center grid grid-cols-2 gap-2 mt-2"><div><div className="text-[10px] font-bold text-blue-600">Costo Unit.</div><div className="font-bold">${calculations.unitFinal.toFixed(2)}</div></div><div><div className="text-[10px] font-bold text-green-600">Stock Final</div><div className="font-bold">{calculations.finalStock}</div></div></div>
-            <div className="grid grid-cols-2 gap-2 border-t pt-2"><div><label className="text-xs">Margen %</label><input type="number" className="w-full p-1 border rounded" value={formData.margin} onChange={e => setFormData({...formData, margin: e.target.value})} /></div><div><label className="text-xs">Precio Venta</label><div className="w-full p-1 bg-green-100 font-bold text-center rounded">${Math.ceil((calculations.unitFinal) * (1 + (formData.margin / 100)))}</div></div></div>
-            <Button className="w-full mt-2" onClick={handleInitialSave}>{modalMode === 'RESTOCK' ? 'Procesar' : 'Guardar'}</Button>
+            <Button className="w-full mt-2" onClick={handleInitialSave}>
+                {modalMode === 'RESTOCK' ? 'Confirmar Ingreso' : 'Guardar'}
+            </Button>
           </div>
           {showPaymentModal && <div className="absolute inset-0 bg-white/95 z-20 flex flex-col items-center justify-center p-4 rounded"><h3 className="font-bold mb-4">¿Estado del Pago?</h3><div className="space-y-3 w-full"><button onClick={() => processTransaction('PAID')} className="w-full p-3 border-green-500 border bg-green-50 rounded font-bold text-green-700">Se Pagó (Caja)</button><button onClick={() => processTransaction('OWED')} className="w-full p-3 border-red-500 border bg-red-50 rounded font-bold text-red-700">Se Debe (Cta. Cte.)</button></div><button onClick={() => setShowPaymentModal(false)} className="mt-4 text-gray-400">Cancelar</button></div>}
         </Card>
@@ -754,8 +864,4 @@ const StatsView = ({ sales }) => {
 const HistoryView = ({ closedShifts, setPrintData }) => <div className="space-y-2 pb-20"><h2 className="font-bold mb-4">Cajas Cerradas</h2>{closedShifts.map(s => <Card key={s.id} className="p-4 flex justify-between"><div><div className="font-bold text-gray-800">{new Date(s.date).toLocaleDateString()}</div><div className="text-xs text-gray-500">{s.cashier}</div></div><div className="text-right"><div className="font-bold text-green-600">${s.totals.revenue}</div><Button onClick={()=>setPrintData(s)} className="text-xs py-1 px-2 h-auto mt-1">Ver PDF</Button></div></Card>)}</div>;
 const SupplierPaymentModal = ({ onClose, onSave }) => { const [a, setA] = useState(''); const [s, setS] = useState(''); const [n, setN] = useState(''); return <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded w-full max-w-sm space-y-4"><h3 className="font-bold">Pago Proveedor</h3><input placeholder="Monto" type="number" className="w-full border p-2 rounded" onChange={e=>setA(e.target.value)}/><input placeholder="Proveedor" className="w-full border p-2 rounded" onChange={e=>setS(e.target.value)}/><input placeholder="Nota" className="w-full border p-2 rounded" onChange={e=>setN(e.target.value)}/><div className="flex gap-2"><Button onClick={onClose} variant="secondary" className="flex-1">Cancelar</Button><Button onClick={()=>onSave(a,s,n)} variant="danger" className="flex-1">Registrar</Button></div></div></div> };
 const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data.totals, null, 2)}</pre></div> };
-const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); 
-    const items = data.items || data;
-    const title = data.title || "Lista";
-    return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">{title}</h1><ul className="mt-4 space-y-2">{items.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><div><span className="block font-bold">{p.name}</span><span className="text-xs text-gray-500">{p.barcode}</span></div><div className="text-right"><span className="font-bold text-red-600 block">Stock: {p.stock}</span><span className="text-xs text-gray-400">Min: {p.minStock}</span></div></li>)}</ul></div> 
-};
+const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold text-red-600">Stock: {p.stock}</span></li>)}</ul></div> };
