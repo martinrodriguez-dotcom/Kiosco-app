@@ -238,7 +238,7 @@ export default function KioscoSystem() {
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES BLINDADAS ---
+  // --- TRANSACCIONES DE PRODUCTOS (CORREGIDA - SIN DUPLICADOS) ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -252,31 +252,34 @@ export default function KioscoSystem() {
       };
       
       if (isRestock) {
+        // --- LÓGICA DE REPOSICIÓN SEGURA ---
+        // 1. Verificación: Si no hay ID, detenemos todo.
         if (!productId) {
-            alert("Error Crítico: ID de producto no encontrado.");
+            alert("Error Crítico: No se pudo identificar el producto a reponer. Recargue la página.");
             return;
         }
-        
+
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // --- FIX DEL ERROR "No document to update" ---
-        // Usamos set({ ... }, { merge: true }) en lugar de update.
-        // Esto restaura el documento si no existía y actualiza si existe.
-        // Le pasamos ...productData.fullObject para que tenga nombre y datos base si se recrea.
-        batch.set(productRef, {
-            ...productData.fullObject, // Datos base por seguridad (nombre, barcode)
+        // 2. Operación: Usamos update() estrictamente.
+        // update() fallará si el documento no existe, en lugar de crear uno nuevo.
+        // Esto garantiza que NO se generen duplicados.
+        // Usamos increment() para sumar al stock existente.
+        batch.update(productRef, {
             ...dataToUpdate,
-            stock: increment(Number(addedStock)), // Suma atómica
+            stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
-        }, { merge: true });
+        });
 
       } else {
-        // Create or Edit Details
+        // --- LÓGICA DE CREACIÓN / EDICIÓN ---
         if (productId) {
+             // Edición de detalles
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-             batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
+             batch.update(productRef, { ...productData.fullObject, ...dataToUpdate });
         } else {
+             // Creación de nuevo producto
              const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
              batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
         }
@@ -301,7 +304,9 @@ export default function KioscoSystem() {
       
     } catch (e) { 
         console.error(e);
-        alert("Error en la operación: " + e.message); 
+        // Manejo de errores amigable
+        if (e.code === 'not-found') alert("Error: El producto que intentas reponer no se encuentra en la base de datos.");
+        else alert("Error en la operación: " + e.message); 
     }
   };
 
