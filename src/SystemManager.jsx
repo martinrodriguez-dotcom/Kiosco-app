@@ -259,9 +259,8 @@ export default function KioscoSystem() {
         
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // CORRECCIÓN: set con merge: true para evitar "No document to update"
         batch.set(productRef, {
-            ...productData.fullObject, // Asegura que existan datos base si se recrea
+            ...productData.fullObject, 
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
@@ -708,11 +707,25 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
                 <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
             </div>
 
-            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
-            <hr/>
-            <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
-            <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
-            <div className="grid grid-cols-2 gap-2">
+            {/* Stock Actual visible solo para referencia */}
+             <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between">
+                 <span className="text-sm text-blue-800 font-bold">Stock Actual:</span>
+                 <span className="text-sm text-blue-600 font-bold">{formData.currentStock} u.</span>
+             </div>
+             
+             {modalMode !== 'RESTOCK' && (
+                <div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div>
+             )}
+
+            <hr className="border-gray-100"/>
+
+            {/* FORMULARIO DE REPOSICIÓN / COSTOS */}
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Datos de Reposición' : 'Datos Iniciales'}</span></div>
+              
+              <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
+              
+              <div className="grid grid-cols-2 gap-2">
                  <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">{modalMode === 'RESTOCK' ? 'Costo del Bulto/Pack' : 'Costo Total'}</label>
                   <input type="number" className="w-full p-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" value={formData.inputCost} onChange={e => setFormData({...formData, inputCost: e.target.value})} placeholder="$0.00" autoFocus={modalMode === 'RESTOCK'} />
@@ -817,4 +830,8 @@ const StatsView = ({ sales }) => {
 const HistoryView = ({ closedShifts, setPrintData }) => <div className="space-y-2 pb-20"><h2 className="font-bold mb-4">Cajas Cerradas</h2>{closedShifts.map(s => <Card key={s.id} className="p-4 flex justify-between"><div><div className="font-bold text-gray-800">{new Date(s.date).toLocaleDateString()}</div><div className="text-xs text-gray-500">{s.cashier}</div></div><div className="text-right"><div className="font-bold text-green-600">${s.totals.revenue}</div><Button onClick={()=>setPrintData(s)} className="text-xs py-1 px-2 h-auto mt-1">Ver PDF</Button></div></Card>)}</div>;
 const SupplierPaymentModal = ({ onClose, onSave }) => { const [a, setA] = useState(''); const [s, setS] = useState(''); const [n, setN] = useState(''); return <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded w-full max-w-sm space-y-4"><h3 className="font-bold">Pago Proveedor</h3><input placeholder="Monto" type="number" className="w-full border p-2 rounded" onChange={e=>setA(e.target.value)}/><input placeholder="Proveedor" className="w-full border p-2 rounded" onChange={e=>setS(e.target.value)}/><input placeholder="Nota" className="w-full border p-2 rounded" onChange={e=>setN(e.target.value)}/><div className="flex gap-2"><Button onClick={onClose} variant="secondary" className="flex-1">Cancelar</Button><Button onClick={()=>onSave(a,s,n)} variant="danger" className="flex-1">Registrar</Button></div></div></div> };
 const PrintableReport = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Reporte Caja</h1><pre className="mt-4">{JSON.stringify(data.totals, null, 2)}</pre></div> };
-const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">Lista Reposición</h1><ul className="mt-4 space-y-2">{data.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><span>{p.name}</span><span className="font-bold text-red-600">Stock: {p.stock}</span></li>)}</ul></div> };
+const RestockList = ({ data, onClose }) => { useEffect(()=>{setTimeout(()=>window.print(),500)},[]); 
+    const items = data.items || data;
+    const title = data.title || "Lista";
+    return <div className="bg-white h-screen p-8 text-black"><Button onClick={onClose} className="no-print mb-4">Cerrar</Button><h1 className="text-2xl font-bold">{title}</h1><ul className="mt-4 space-y-2">{items.map(p=><li key={p.id} className="border-b py-2 flex justify-between"><div><span className="block font-bold">{p.name}</span><span className="text-xs text-gray-500">{p.barcode}</span></div><div className="text-right"><span className="font-bold text-red-600 block">Stock: {p.stock}</span><span className="text-xs text-gray-400">Min: {p.minStock}</span></div></li>)}</ul></div> 
+};
