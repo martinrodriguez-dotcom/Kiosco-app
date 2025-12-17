@@ -238,7 +238,7 @@ export default function KioscoSystem() {
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES DE PRODUCTOS (CORREGIDA - SIN DUPLICADOS) ---
+  // --- TRANSACCIONES BLINDADAS ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -252,34 +252,28 @@ export default function KioscoSystem() {
       };
       
       if (isRestock) {
-        // --- LÓGICA DE REPOSICIÓN SEGURA ---
-        // 1. Verificación: Si no hay ID, detenemos todo.
         if (!productId) {
-            alert("Error Crítico: No se pudo identificar el producto a reponer. Recargue la página.");
+            alert("Error Crítico: ID de producto no encontrado.");
             return;
         }
-
+        
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // 2. Operación: Usamos update() estrictamente.
-        // update() fallará si el documento no existe, en lugar de crear uno nuevo.
-        // Esto garantiza que NO se generen duplicados.
-        // Usamos increment() para sumar al stock existente.
-        batch.update(productRef, {
+        // CORRECCIÓN: set con merge: true para evitar "No document to update"
+        batch.set(productRef, {
+            ...productData.fullObject, // Asegura que existan datos base si se recrea
             ...dataToUpdate,
             stock: increment(Number(addedStock)), 
             cost: Number(productData.newCost),
             price: Number(productData.newPrice)
-        });
+        }, { merge: true });
 
       } else {
-        // --- LÓGICA DE CREACIÓN / EDICIÓN ---
+        // Create or Edit Details
         if (productId) {
-             // Edición de detalles
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-             batch.update(productRef, { ...productData.fullObject, ...dataToUpdate });
+             batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
         } else {
-             // Creación de nuevo producto
              const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
              batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
         }
@@ -304,9 +298,7 @@ export default function KioscoSystem() {
       
     } catch (e) { 
         console.error(e);
-        // Manejo de errores amigable
-        if (e.code === 'not-found') alert("Error: El producto que intentas reponer no se encuentra en la base de datos.");
-        else alert("Error en la operación: " + e.message); 
+        alert("Error en la operación: " + e.message); 
     }
   };
 
@@ -716,25 +708,11 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
                 <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
             </div>
 
-            {/* Stock Actual visible solo para referencia */}
-             <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between">
-                 <span className="text-sm text-blue-800 font-bold">Stock Actual:</span>
-                 <span className="text-sm text-blue-600 font-bold">{formData.currentStock} u.</span>
-             </div>
-             
-             {modalMode !== 'RESTOCK' && (
-                <div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div>
-             )}
-
-            <hr className="border-gray-100"/>
-
-            {/* FORMULARIO DE REPOSICIÓN / COSTOS */}
-            <div>
-              <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Datos de Reposición' : 'Datos Iniciales'}</span></div>
-              
-              <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
-              
-              <div className="grid grid-cols-2 gap-2">
+            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
+            <hr/>
+            <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
+            <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
+            <div className="grid grid-cols-2 gap-2">
                  <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">{modalMode === 'RESTOCK' ? 'Costo del Bulto/Pack' : 'Costo Total'}</label>
                   <input type="number" className="w-full p-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" value={formData.inputCost} onChange={e => setFormData({...formData, inputCost: e.target.value})} placeholder="$0.00" autoFocus={modalMode === 'RESTOCK'} />
