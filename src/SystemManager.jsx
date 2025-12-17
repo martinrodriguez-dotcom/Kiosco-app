@@ -187,8 +187,7 @@ export default function KioscoSystem() {
         stock: Number(d.data().stock||0), 
         minStock: Number(d.data().minStock||0), 
         cost: Number(d.data().cost||0), 
-        price: Number(d.data().price||0),
-        margin: Number(d.data().margin||0)
+        price: Number(d.data().price||0) 
     }))), handleSnapshotError);
     const unsubSales = onSnapshot(getPath('sales'), (snap) => setSales(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
     const unsubPayments = onSnapshot(getPath('payments'), (snap) => setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b)=>new Date(b.date)-new Date(a.date))), handleSnapshotError);
@@ -239,7 +238,7 @@ export default function KioscoSystem() {
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES BLINDADAS (ACTUALIZACIÓN SEGURA) ---
+  // --- TRANSACCIONES BLINDADAS ---
   const handleProductTransaction = async (productData, financialData) => {
     const { isRestock, productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
@@ -254,29 +253,30 @@ export default function KioscoSystem() {
       
       if (isRestock) {
         if (!productId) {
-            alert("Error: No se identificó el producto para reponer.");
+            alert("Error Crítico: ID de producto no encontrado.");
             return;
         }
         
-        // Referencia exacta al producto existente
         const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
         
-        // SOLO ACTUALIZAMOS. Si no existe, fallará y no duplicará.
-        batch.update(productRef, {
-            stock: increment(Number(addedStock)), 
+        // --- FIX DEL ERROR "No document to update" ---
+        // Usamos set({ ... }, { merge: true }) en lugar de update.
+        // Esto restaura el documento si no existía y actualiza si existe.
+        // Le pasamos ...productData.fullObject para que tenga nombre y datos base si se recrea.
+        batch.set(productRef, {
+            ...productData.fullObject, // Datos base por seguridad (nombre, barcode)
+            ...dataToUpdate,
+            stock: increment(Number(addedStock)), // Suma atómica
             cost: Number(productData.newCost),
-            price: Number(productData.newPrice),
-            expiry: productData.expiry || '' // Actualizamos fecha de lote también
-        });
+            price: Number(productData.newPrice)
+        }, { merge: true });
 
       } else {
-        // MODO CREAR / EDITAR DETALLES
+        // Create or Edit Details
         if (productId) {
-             // Edición de datos fijos (nombre, código)
              const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-             batch.update(productRef, { ...productData.fullObject, ...dataToUpdate });
+             batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
         } else {
-             // Crear nuevo producto
              const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
              batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
         }
@@ -301,8 +301,7 @@ export default function KioscoSystem() {
       
     } catch (e) { 
         console.error(e);
-        if (e.code === 'not-found') alert("Error: El producto no existe en la base de datos. Recarga la app.");
-        else alert("Error en la operación: " + e.message); 
+        alert("Error en la operación: " + e.message); 
     }
   };
 
@@ -542,10 +541,8 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
   const [modalMode, setModalMode] = useState('CREATE'); 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
-  // Agregados campos: packageSize (cantidad bulto), batchQty (cantidad comprada)
-  const [formData, setFormData] = useState({ 
-      name: '', barcode: '', inputCost: '', packageSize: '1', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' 
-  });
+  // Agregados campos: category, expiry
+  const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', packageSize: '1', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' });
   const [calculations, setCalculations] = useState({ unitBase: 0, unitFinal: 0, finalStock: 0 });
 
   useEffect(() => {
@@ -639,11 +636,6 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
             expiry: formData.expiry
         } 
     };
-    // Ojo: Si compré 8 unidades pero el precio era por bulto de 10... ¿cuánto pagué?
-    // Asumimos que inputCost es lo que SALIÓ de la caja. 
-    // Si el usuario puso el precio del bulto para calcular el costo, pero compró menos, el total a pagar puede ser distinto.
-    // Para simplificar según tu pedido: "el costo se calcula en precio del pack...".
-    // Asumimos que inputCost es lo que se paga.
     const financialData = { totalCost: paymentStatus === 'NO_COST' ? 0 : totalCost, paymentStatus };
     
     if (user.role !== 'admin') onRequestAuth('PRODUCT_TRANSACTION', { productData, financialData }, `Solicita ${modalMode === 'RESTOCK' ? 'ingreso' : 'edición'}: ${formData.name}`);
