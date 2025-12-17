@@ -4,7 +4,7 @@ import {
   Trash2, Edit, X, TrendingUp, Truck, FileText, Scale, Hash, 
   CreditCard, QrCode, Banknote, ArrowUpCircle, ArrowDownCircle, 
   Calculator, Menu, BarChart2, AlertTriangle, ShieldAlert, Bell,
-  History, Printer, Scan, ClipboardList, PackagePlus, Briefcase, Calendar, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw, LogIn, ArrowLeft, Tag, CalendarDays
+  History, Printer, Scan, ClipboardList, Briefcase, CheckCircle, Database, Lock, Minus, Key, UserPlus, RefreshCw
 } from 'lucide-react';
 
 // Importaciones de Firebase
@@ -20,7 +20,6 @@ import {
   getFirestore, 
   collection, 
   addDoc, 
-  updateDoc, 
   deleteDoc, 
   doc, 
   onSnapshot, 
@@ -130,10 +129,9 @@ export default function KioscoSystem() {
   const [regPass, setRegPass] = useState('');
   const [showShiftStartModal, setShowShiftStartModal] = useState(false);
 
-  // 1. Limpieza de Caché
   useEffect(() => { localStorage.clear(); }, []);
 
-  // 2. Monitor Auth
+  // Monitor Auth
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
@@ -176,7 +174,7 @@ export default function KioscoSystem() {
       else localStorage.removeItem('kiosco_shift_data');
   }, [currentShiftData]);
 
-  // 3. Sync Data
+  // Sync Data
   useEffect(() => {
     if (!firebaseUser) return;
     const getPath = (col) => collection(db, 'tiendas', STORE_ID, col);
@@ -238,9 +236,11 @@ export default function KioscoSystem() {
   const seedDatabase = async () => { try { const b = writeBatch(db); [{name:'Coca Cola',price:1500,stock:10}].forEach(p=>b.set(doc(collection(db,'tiendas',STORE_ID,'products')),p)); await b.commit(); alert("Datos cargados"); } catch(e){alert(e);} };
   const handleFactoryReset = async () => { if(window.confirm("¿BORRAR TODO?")) { setLoading(true); try { await Promise.all(['products','sales','payments','debts','shifts','notifications'].map(async c => { const q=query(collection(db,'tiendas',STORE_ID,c)); const s=await getDocs(q); const b=writeBatch(db); s.forEach(d=>b.delete(d.ref)); await b.commit(); })); alert("Reset completo"); } catch(e){alert(e);} finally{setLoading(false);} } };
 
-  // --- TRANSACCIONES BLINDADAS ---
+  // --- TRANSACCIONES (LIMPIA: SIN LOGICA DE REPOSICIÓN) ---
   const handleProductTransaction = async (productData, financialData) => {
-    const { isRestock, productId, addedStock, packageSize, packageCost } = productData;
+    // NOTA: Se eliminó toda la lógica de 'isRestock' anterior para reescribirla.
+    // Solo manejamos CREATE y EDIT (set con merge)
+    const { productId, addedStock } = productData;
     const { totalCost, paymentStatus } = financialData; 
 
     try {
@@ -251,53 +251,16 @@ export default function KioscoSystem() {
         expiry: productData.expiry || '',
       };
       
-      if (isRestock) {
-        // REPOSICIÓN: Actualiza stock y precios de un producto EXISTENTE.
-        if (!productId) {
-            alert("Error Crítico: ID de producto no encontrado.");
-            return;
-        }
-
-        // Buscar producto actual en la lista local para comparar costos
-        const currentProd = products.find(p => p.id === productId);
-        if (!currentProd) {
-            alert("El producto que intentas reponer no existe en la base de datos.");
-            return;
-        }
-
-        // CÁLCULO DE COSTO Y PRECIO (Lógica de "El Mayor Manda")
-        // 1. Calculamos el costo unitario de esta reposición nueva
-        const newUnitCost = Number(packageCost) / Number(packageSize);
-        
-        // 2. Comparamos con el costo viejo
-        const oldCost = Number(currentProd.cost);
-        const finalCost = newUnitCost > oldCost ? newUnitCost : oldCost;
-
-        // 3. Recalculamos precio de venta basado en el costo final y el margen original
-        const finalPrice = Math.ceil(finalCost * (1 + (Number(currentProd.margin) / 100)));
-
-        const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-        
-        batch.update(productRef, {
-            ...dataToUpdate,
-            stock: increment(Number(addedStock)), 
-            cost: Number(finalCost),
-            price: Number(finalPrice)
-        });
-
+      // Create or Edit Details
+      if (productId) {
+            const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
+            batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
       } else {
-        // Create or Edit Details
-        if (productId) {
-             const productRef = doc(db, 'tiendas', STORE_ID, 'products', productId);
-             batch.set(productRef, { ...productData.fullObject, ...dataToUpdate }, { merge: true });
-        } else {
-             const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
-             batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
-        }
+            const newProductRef = doc(collection(db, 'tiendas', STORE_ID, 'products'));
+            batch.set(newProductRef, { ...productData.fullObject, ...dataToUpdate });
       }
 
-      // Lógica Financiera (Registro del gasto)
-      // Se registra el monto que salió de la caja o deuda por ESTA compra específica
+      // Lógica Financiera (Solo para carga inicial con costo)
       if (totalCost > 0) {
           const col = paymentStatus === 'PAID' ? 'payments' : 'debts';
           const ref = doc(collection(db, 'tiendas', STORE_ID, col));
@@ -305,7 +268,7 @@ export default function KioscoSystem() {
               date: new Date().toISOString(), 
               amount: totalCost, 
               supplier: productData.supplierName || 'General', 
-              note: isRestock ? `Reposición: ${productData.productName}` : `Carga Inicial`, 
+              note: `Carga Inicial`, 
               user: userData.name, 
               status: paymentStatus==='PAID'?'open':'PENDING', 
               ...(paymentStatus==='OWED' && {productName: productData.productName, qty: addedStock}) 
@@ -549,65 +512,37 @@ const ShiftManager = ({ sales, payments, user, shiftData, onCloseShift, onDelete
   );
 };
 
-// --- PRODUCT MANAGER (UPDATED: FIXED REPO LOGIC) ---
+// --- PRODUCT MANAGER (CLEANED) ---
 const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onGenerateExpiry, onProductTransaction, onDeleteProduct }) => {
   const [editingId, setEditingId] = useState(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [modalMode, setModalMode] = useState('CREATE'); 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   
-  // Agregados campos: packageSize (cantidad bulto), batchQty (cantidad comprada)
-  const [formData, setFormData] = useState({ 
-      name: '', barcode: '', inputCost: '', packageSize: '1', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' 
-  });
+  // Agregados campos: category, expiry
+  const [formData, setFormData] = useState({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' });
   const [calculations, setCalculations] = useState({ unitBase: 0, unitFinal: 0, finalStock: 0 });
 
   useEffect(() => {
     const costTotal = parseFloat(formData.inputCost) || 0;
-    const unitsPerPack = parseFloat(formData.packageSize) || 1;
-    const qtyPurchased = parseFloat(formData.batchQty) || 0; // Unidades sueltas compradas
-    
-    // 1. Cálculo de Costo Unitario
-    // Si estamos reponiendo o creando, el costo unitario se deriva del (Costo Total / Unidades en ese Pack)
-    // PERO: Si compro 8 unidades sueltas, ¿el costo total es por las 8? Asumimos que inputCost es el TOTAL FACTURA.
-    // Si es bulto cerrado: Costo Bulto / Unidades Bulto = Costo Unitario.
-    // Si compro unidades sueltas: Costo Total / Unidades Compradas = Costo Unitario.
-    
-    // Lógica pedida: "costo dividido las cantidad de unidades que trae"
-    // Interpretación: Input "Costo Nuevo" se refiere al precio del Bulto/Caja Cerrada o al total pagado por las unidades.
-    // Usaremos: Costo Total Pagado / Cantidad de Unidades Compradas = Costo Unitario de esta compra.
-    
+    const qtyLote = parseFloat(formData.batchQty) || 0; 
     let unitBase = 0;
-    // Si estoy comprando algo (batchQty > 0)
-    if (qtyPurchased > 0) {
-        // Opción A: inputCost es el costo del bulto entero (ej $10000 por 10), pero compré 8.
-        // Opción B: inputCost es lo que pagué por esas 8 ($8000).
-        // Para simplificar y hacerlo flexible: "Costo Total de la Compra" / "Cantidad de Unidades Compradas".
-        // Si el usuario pone Costo Pack $10000 y Cantidad 10 -> Unitario $1000.
-        unitBase = costTotal / qtyPurchased;
+    if (qtyLote > 0) {
+        unitBase = costTotal / qtyLote;
     } else if (modalMode === 'EDIT_DETAILS' && editingId) {
         const p = products.find(p => p.id === editingId);
         unitBase = p ? (p.hasIva ? p.cost : p.cost / 1.21) : 0;
     }
-
     const unitFinal = formData.hasIva ? unitBase : unitBase * 1.21;
-    
-    // Stock Proyectado (Solo visual)
     let finalStock = formData.currentStock;
-    if (modalMode === 'RESTOCK' && editingId) {
-        finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyPurchased;
-    } else if (modalMode === 'CREATE') {
-        finalStock = qtyPurchased;
+    if (modalMode === 'RESTOCK') {
+        finalStock = (products.find(p=>p.id===editingId)?.stock || 0) + qtyLote;
     }
-
     setCalculations({ unitBase, unitFinal, finalStock });
-  }, [formData.inputCost, formData.batchQty, formData.packageSize, formData.currentStock, formData.hasIva, modalMode, editingId]);
+  }, [formData.inputCost, formData.batchQty, formData.currentStock, formData.hasIva, modalMode, editingId]);
 
   const handleInitialSave = () => {
       if (!formData.name) return alert("Nombre requerido");
-      // Validación extra para reposición
-      if (modalMode === 'RESTOCK' && (!formData.inputCost || !formData.batchQty)) return alert("Ingrese Costo y Cantidad para reponer.");
-      
       if (modalMode === 'EDIT_DETAILS') { processTransaction('NO_COST'); return; }
       setShowPaymentModal(true);
   }
@@ -615,16 +550,11 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
   const processTransaction = (paymentStatus) => { 
     // Lógica "El Mayor Manda" (Inflación)
     let newCost = parseFloat(calculations.unitFinal.toFixed(2));
-    
-    // Si es reposición, comparamos con el costo anterior
     if (modalMode === 'RESTOCK' && editingId) {
         const currentProd = products.find(p => p.id === editingId);
         if (currentProd) {
             const oldCost = Number(currentProd.cost);
-            // Si el nuevo costo es menor, nos quedamos con el viejo (el mayor).
-            if (newCost < oldCost) {
-                newCost = oldCost;
-            }
+            if (newCost < oldCost) newCost = oldCost;
         }
     }
 
@@ -646,7 +576,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
             id: editingId || Date.now().toString(), 
             name: formData.name, 
             barcode: formData.barcode, 
-            stock: modalMode === 'CREATE' ? addedStock : Number(formData.currentStock), // En create usamos lo comprado
+            stock: Number(formData.currentStock),
             minStock: parseInt(formData.minStock) || 5, 
             cost: newCost, 
             price: sellingPrice, 
@@ -662,12 +592,11 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
     
     setShowPaymentModal(false); 
     setIsFormOpen(false); 
-    // Reset form
     setFormData({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' }); 
     setCalculations({ unitBase: 0, unitFinal: 0, finalStock: 0 });
   };
 
-  const startCreate = () => { setEditingId(null); setModalMode('CREATE'); setFormData({ name: '', barcode: '', inputCost: '', batchQty: '', currentStock: 0, minStock: 5, hasIva: true, margin: 50, supplier: '', category: 'Varios', expiry: '' }); setIsFormOpen(true); };
+  const startCreate = () => { setEditingId(null); setModalMode('CREATE'); setIsFormOpen(true); };
   
   const startEditDetails = (p) => { 
     setEditingId(p.id); 
@@ -688,24 +617,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
     setIsFormOpen(true); 
   };
   
-  const startRestock = (p) => { 
-    setEditingId(p.id); 
-    setModalMode('RESTOCK'); 
-    setFormData({ 
-        name: p.name, // Nombre fijo
-        barcode: p.barcode, 
-        inputCost: '', // Limpio para ingreso nuevo
-        batchQty: '',  // Limpio para ingreso nuevo
-        currentStock: p.stock, // Solo lectura
-        minStock: p.minStock, 
-        hasIva: p.hasIva, 
-        margin: p.margin || 50, 
-        supplier: '', 
-        category: p.category || 'Varios', 
-        expiry: p.expiry || '' 
-    }); 
-    setIsFormOpen(true); 
-  }
+  // REMOVED startRestock function here to be recreated in next step
 
   return (
     <div className="pb-20 animate-in">
@@ -721,77 +633,23 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
         <Card className="p-4 relative z-10">
           <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">{modalMode === 'RESTOCK' ? 'Reponer Stock' : (modalMode === 'CREATE' ? 'Nuevo Producto' : 'Editar Detalles')}</h3><button onClick={() => setIsFormOpen(false)}><X size={20} /></button></div>
           <div className="space-y-4">
+            {modalMode !== 'RESTOCK' && <><input className="w-full p-2 border rounded" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" /><div className="flex gap-2"><input className="w-full p-2 border rounded bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" /><Scan className="text-gray-400 mt-2"/></div></>}
             
-            {/* Nombre y Código (Solo lectura en Reposición) */}
-            <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
-                <input className="w-full p-2 border rounded-lg bg-gray-50" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Nombre" disabled={modalMode === 'RESTOCK'} />
-            </div>
-            
-            {modalMode !== 'RESTOCK' && (
-                <div className="flex gap-2">
-                    <input className="w-full p-2 border rounded-lg bg-gray-50" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} placeholder="Código Barras" />
-                    <div className="p-2 bg-gray-100 rounded text-gray-500"><Scan size={20}/></div>
-                </div>
-            )}
-            
-            {/* Stock Actual (Siempre solo lectura en formularios, salvo creación inicial manual) */}
-            {modalMode !== 'CREATE' && (
-                 <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between">
-                     <span className="text-sm text-blue-800 font-bold">Stock Actual:</span>
-                     <span className="text-sm text-blue-600 font-bold">{formData.currentStock} u.</span>
-                 </div>
-            )}
-
-            {/* Formulario de Costos y Cantidades (Solo para Create y Restock) */}
-            {modalMode !== 'EDIT_DETAILS' && (
-                <>
-                <hr className="border-gray-100"/>
-                <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">Datos de Compra</span></div>
-                
-                <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
-                
-                <div className="grid grid-cols-2 gap-2">
-                    <div>
-                        <label className="text-xs font-bold text-gray-500">Costo Total Compra</label>
-                        <input type="number" className="w-full p-2 border rounded font-bold" placeholder="$0.00" value={formData.inputCost} onChange={e => setFormData({...formData, inputCost: e.target.value})} autoFocus={modalMode === 'RESTOCK'} />
-                    </div>
-                    <div>
-                        <label className="text-xs font-bold text-gray-500">Unidades Compradas</label>
-                        <input type="number" className="w-full p-2 border rounded font-bold" placeholder="0" value={formData.batchQty} onChange={e => setFormData({...formData, batchQty: e.target.value})} />
-                    </div>
-                </div>
-
-                <div className="bg-gray-100 p-2 rounded text-center grid grid-cols-2 gap-2 mt-2">
-                    <div><div className="text-[10px] font-bold text-gray-500">Costo Unit. Nuevo</div><div className="font-bold text-blue-600">${calculations.unitFinal.toFixed(2)}</div></div>
-                    {/* Visualización de la lógica "Mayor Manda" */}
-                    {modalMode === 'RESTOCK' && calculations.unitFinal < (products.find(p=>p.id===editingId)?.cost||0) && (
-                        <div className="col-span-2 text-[10px] text-amber-600 bg-amber-50 p-1 rounded">⚠️ El costo nuevo es menor. Se mantendrá el costo anterior (${products.find(p=>p.id===editingId)?.cost}) por seguridad.</div>
-                    )}
-                </div>
-                </>
-            )}
-
-            {/* Configuración de Precios (Siempre visible para ajustar margen) */}
-            <div className="grid grid-cols-2 gap-2 border-t pt-2">
-                <div><label className="text-xs">Margen %</label><input type="number" className="w-full p-1 border rounded" value={formData.margin} onChange={e => setFormData({...formData, margin: e.target.value})} /></div>
-                <div>
-                    <label className="text-xs">Precio Venta</label>
-                    <div className="w-full p-1 bg-green-100 font-bold text-center rounded">
-                        ${Math.ceil(
-                            // Previsualizar precio final usando la lógica "Mayor Manda"
-                            (modalMode === 'RESTOCK' 
-                                ? Math.max(calculations.unitFinal, (products.find(p=>p.id===editingId)?.cost||0)) 
-                                : calculations.unitFinal
-                            ) * (1 + (formData.margin / 100))
-                        )}
-                    </div>
-                </div>
+            {/* Categoría y Vencimiento */}
+            <div className="flex gap-2">
+                <div className="flex-1"><label className="text-xs font-bold text-gray-500">Categoría</label><select className="w-full p-2 border rounded bg-white" value={formData.category} onChange={e=>setFormData({...formData, category:e.target.value})}><option>Varios</option><option>Bebidas</option><option>Golosinas</option><option>Almacén</option><option>Cigarrillos</option><option>Limpieza</option><option>Lácteos</option></select></div>
+                <div className="flex-1"><label className="text-xs font-bold text-gray-500">Vencimiento</label><input type="date" className="w-full p-2 border rounded" value={formData.expiry} onChange={e=>setFormData({...formData, expiry:e.target.value})} /></div>
             </div>
 
-            <Button className="w-full mt-2" onClick={handleInitialSave}>
-                {modalMode === 'RESTOCK' ? 'Confirmar Ingreso' : 'Guardar'}
-            </Button>
+            <div className="bg-gray-100 p-2 rounded flex gap-2"><div className="flex-1"><label className="text-xs">Stock Real (Editable)</label><input type="number" className="w-full p-1 text-right rounded" value={formData.currentStock} onChange={e => setFormData({...formData, currentStock: parseFloat(e.target.value)||0})} disabled={modalMode==='RESTOCK'}/></div><div className="flex-1"><label className="text-xs text-red-500">Mínimo</label><input type="number" className="w-full p-1 text-right rounded border-red-200" value={formData.minStock} onChange={e => setFormData({...formData, minStock: parseFloat(e.target.value)||0})}/></div></div>
+            <hr/>
+            <div className="flex items-center gap-2 mb-2"><Calculator size={16} className="text-blue-500"/><span className="text-sm font-bold text-blue-900 uppercase">{modalMode === 'RESTOCK' ? 'Factura Proveedor' : 'Costos'}</span></div>
+            <input className="w-full p-2 border rounded mb-2" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} placeholder="Proveedor (Opcional)" />
+            <div className="grid grid-cols-2 gap-2"><input type="number" className="p-2 border rounded" placeholder="Costo Total $" value={formData.inputCost} onChange={e => setFormData({...formData, inputCost: e.target.value})} /><input type="number" className="p-2 border rounded" placeholder="Cant. Unidades" value={formData.batchQty} onChange={e => setFormData({...formData, batchQty: e.target.value})} /></div>
+            <div className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={formData.hasIva} onChange={e => setFormData({...formData, hasIva: e.target.checked})} /> Costo incluye IVA</div>
+            <div className="bg-blue-50 p-2 rounded text-center grid grid-cols-2 gap-2 mt-2"><div><div className="text-[10px] font-bold text-blue-600">Costo Unit.</div><div className="font-bold">${calculations.unitFinal.toFixed(2)}</div></div><div><div className="text-[10px] font-bold text-green-600">Stock Final</div><div className="font-bold">{calculations.finalStock}</div></div></div>
+            <div className="grid grid-cols-2 gap-2 border-t pt-2"><div><label className="text-xs">Margen %</label><input type="number" className="w-full p-1 border rounded" value={formData.margin} onChange={e => setFormData({...formData, margin: e.target.value})} /></div><div><label className="text-xs">Precio Venta</label><div className="w-full p-1 bg-green-100 font-bold text-center rounded">${Math.ceil((modalMode === 'RESTOCK' ? Math.max(calculations.unitFinal, (products.find(p=>p.id===editingId)?.cost||0)) : calculations.unitFinal) * (1 + (formData.margin / 100)))}</div></div></div>
+            <Button className="w-full mt-2" onClick={handleInitialSave}>{modalMode === 'RESTOCK' ? 'Procesar' : 'Guardar'}</Button>
           </div>
           {showPaymentModal && <div className="absolute inset-0 bg-white/95 z-20 flex flex-col items-center justify-center p-4 rounded"><h3 className="font-bold mb-4">¿Estado del Pago?</h3><div className="space-y-3 w-full"><button onClick={() => processTransaction('PAID')} className="w-full p-3 border-green-500 border bg-green-50 rounded font-bold text-green-700">Se Pagó (Caja)</button><button onClick={() => processTransaction('OWED')} className="w-full p-3 border-red-500 border bg-red-50 rounded font-bold text-red-700">Se Debe (Cta. Cte.)</button></div><button onClick={() => setShowPaymentModal(false)} className="mt-4 text-gray-400">Cancelar</button></div>}
         </Card>
@@ -810,7 +668,7 @@ const ProductManager = ({ products, user, onRequestAuth, onGenerateLowStock, onG
                 <div className="flex flex-col gap-2 items-end">
                   <div className="font-bold text-lg text-green-600">${p.price}</div>
                   <div className="flex gap-2">
-                    <button onClick={()=>startRestock(p)} className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs flex gap-1"><PackagePlus size={12}/> +Stock</button>
+                    {/* REMOVED Restock Button */}
                     <button onClick={()=>startEditDetails(p)} className="text-gray-400 p-1"><Edit size={14}/></button>
                     {user.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); onDeleteProduct(p.id); }} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-200"><Trash2 size={14}/></button>}
                   </div>
