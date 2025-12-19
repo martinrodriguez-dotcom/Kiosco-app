@@ -3,21 +3,19 @@ import { calculateProductPricing } from './productLogic';
 import { createProduct } from './productsService';
 
 const AddProductForm = () => {
-  // Estado inicial del formulario
   const [formData, setFormData] = useState({
     nombre: '',
     codigoBarras: '',
     costoBulto: 0,
     cantidadBulto: 1,
-    cantidadComprada: 1, // Cuantos bultos compramos
-    margenGanancia: 30, // Default 30%
+    cantidadComprada: 1,
+    margenGanancia: 30,
     tieneIVA: true,
   });
 
   const [preciosCalculados, setPreciosCalculados] = useState({ costoUnitario: 0, precioVenta: 0 });
   const [loading, setLoading] = useState(false);
 
-  // Hook: Cada vez que cambian los datos numéricos, recalculamos el precio visualmente
   useEffect(() => {
     const calculos = calculateProductPricing(formData);
     setPreciosCalculados(calculos);
@@ -34,8 +32,6 @@ const AddProductForm = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-
-    // Agregamos el precio calculado final al objeto que vamos a guardar
     const dataToSave = {
       ...formData,
       precioVenta: preciosCalculados.precioVenta,
@@ -45,8 +41,7 @@ const AddProductForm = () => {
     const result = await createProduct(dataToSave);
     
     if (result.success) {
-      alert("Producto cargado con éxito");
-      // Resetear form...
+      alert("¡Producto guardado correctamente!");
       setFormData({ ...formData, nombre: '', codigoBarras: '', costoBulto: 0 });
     } else {
       alert("Error al guardar");
@@ -54,64 +49,78 @@ const AddProductForm = () => {
     setLoading(false);
   };
 
+  // Clases de estilo reutilizables
+  const inputClass = "w-full border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border";
+  const labelClass = "block text-sm font-semibold text-gray-700 mb-1";
+
   return (
-    <div className="p-4 max-w-lg mx-auto bg-white shadow-md rounded-lg">
-      <h2 className="text-xl font-bold mb-4">Cargar Nuevo Producto</h2>
-      
-      <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Nombre y Código */}
-        <div>
-          <label className="block text-sm font-medium">Nombre del Producto</label>
-          <input required type="text" name="nombre" value={formData.nombre} onChange={handleChange} className="w-full border p-2 rounded" />
+    <div className="max-w-2xl mx-auto mt-10">
+      <div className="bg-white shadow-xl rounded-2xl overflow-hidden">
+        <div className="bg-blue-600 px-6 py-4">
+          <h2 className="text-2xl font-bold text-white">📦 Cargar Nuevo Producto</h2>
+          <p className="text-blue-100 text-sm">Ingresa los datos del bulto y calcularemos el precio final.</p>
         </div>
         
-        <div>
-          <label className="block text-sm font-medium">Código de Barras</label>
-          <input type="text" name="codigoBarras" value={formData.codigoBarras} onChange={handleChange} className="w-full border p-2 rounded" />
-        </div>
+        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="col-span-1 md:col-span-2">
+              <label className={labelClass}>Nombre del Producto</label>
+              <input required type="text" name="nombre" placeholder="Ej: Coca Cola 2.25L" value={formData.nombre} onChange={handleChange} className={inputClass} />
+            </div>
+            
+            <div className="col-span-1 md:col-span-2">
+              <label className={labelClass}>Código de Barras</label>
+              <input type="text" name="codigoBarras" placeholder="Escanear o tipear..." value={formData.codigoBarras} onChange={handleChange} className={inputClass} />
+            </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium">Costo del Bulto ($)</label>
-            <input required type="number" name="costoBulto" value={formData.costoBulto} onChange={handleChange} className="w-full border p-2 rounded" />
+            <div>
+              <label className={labelClass}>Costo del Bulto ($)</label>
+              <div className="relative rounded-md shadow-sm">
+                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                  <span className="text-gray-500 sm:text-sm">$</span>
+                </div>
+                <input required type="number" name="costoBulto" value={formData.costoBulto} onChange={handleChange} className={`${inputClass} pl-7`} />
+              </div>
+            </div>
+            
+            <div>
+              <label className={labelClass}>Unidades por Bulto</label>
+              <input required type="number" name="cantidadBulto" value={formData.cantidadBulto} onChange={handleChange} className={inputClass} />
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium">Unidades por Bulto</label>
-            <input required type="number" name="cantidadBulto" value={formData.cantidadBulto} onChange={handleChange} className="w-full border p-2 rounded" />
+
+          <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 flex justify-between items-center text-sm">
+            <span className="text-blue-800">Costo unitario real:</span>
+            <span className="font-bold text-blue-900 text-lg">${preciosCalculados.costoUnitario}</span>
           </div>
-        </div>
 
-        {/* Muestra cálculo automático del costo unitario */}
-        <div className="bg-gray-100 p-2 rounded text-sm">
-          Costo por unidad calculado: <strong>${preciosCalculados.costoUnitario}</strong>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-           <div>
-            <label className="block text-sm font-medium">Bultos Comprados (Stock)</label>
-            <input required type="number" name="cantidadComprada" value={formData.cantidadComprada} onChange={handleChange} className="w-full border p-2 rounded" />
+          <div className="grid grid-cols-2 gap-6">
+             <div>
+              <label className={labelClass}>Stock (Bultos)</label>
+              <input required type="number" name="cantidadComprada" value={formData.cantidadComprada} onChange={handleChange} className={inputClass} />
+            </div>
+            <div>
+              <label className={labelClass}>Margen Ganancia (%)</label>
+              <input required type="number" name="margenGanancia" value={formData.margenGanancia} onChange={handleChange} className={inputClass} />
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium">Margen Ganancia (%)</label>
-            <input required type="number" name="margenGanancia" value={formData.margenGanancia} onChange={handleChange} className="w-full border p-2 rounded" />
+
+          <div className="flex items-center space-x-3 p-2 bg-gray-50 rounded">
+            <input type="checkbox" name="tieneIVA" checked={formData.tieneIVA} onChange={handleChange} id="iva" className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" />
+            <label htmlFor="iva" className="text-sm font-medium text-gray-700">El precio incluye IVA (21%)</label>
           </div>
-        </div>
 
-        <div className="flex items-center space-x-2">
-          <input type="checkbox" name="tieneIVA" checked={formData.tieneIVA} onChange={handleChange} id="iva" />
-          <label htmlFor="iva" className="text-sm font-medium">¿Aplica IVA (21%)?</label>
-        </div>
+          {/* Tarjeta de Precio Final */}
+          <div className="bg-green-50 p-6 rounded-xl border-2 border-green-100 flex flex-col items-center justify-center transform transition-all hover:scale-105">
+            <span className="text-green-600 font-semibold uppercase tracking-wider text-xs">Precio de Venta Sugerido</span>
+            <span className="text-5xl font-black text-green-700 mt-2">${preciosCalculados.precioVenta}</span>
+          </div>
 
-        {/* Precio Final Resaltado */}
-        <div className="bg-green-50 p-4 rounded border border-green-200 text-center">
-          <span className="block text-gray-600 text-sm">Precio de Venta Sugerido (x unidad)</span>
-          <span className="block text-3xl font-bold text-green-700">${preciosCalculados.precioVenta}</span>
-        </div>
-
-        <button disabled={loading} type="submit" className="w-full bg-blue-600 text-white p-3 rounded hover:bg-blue-700 transition">
-          {loading ? 'Guardando...' : 'Guardar Producto'}
-        </button>
-      </form>
+          <button disabled={loading} type="submit" className="w-full bg-blue-600 text-white font-bold text-lg p-4 rounded-xl hover:bg-blue-700 active:bg-blue-800 transition duration-150 shadow-lg disabled:opacity-50">
+            {loading ? 'Guardando en la nube...' : '✅ Guardar Producto'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 };
