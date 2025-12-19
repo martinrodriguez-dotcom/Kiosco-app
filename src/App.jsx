@@ -1,36 +1,42 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext'; // Si ya creaste el context
 
+// Layout Principal
 import Layout from './layout/Layout';
-import ShopDashboard from './modules/products/ShopDashboard'; // <-- IMPORTANTE: USAR ESTE
+
+// Dashboard Principal (Con pestañas de Venta y Caja)
+import ShopDashboard from './modules/products/ShopDashboard';
+
+// Módulos de Productos
 import AddProductForm from './modules/products/AddProductForm';
 import RestockForm from './modules/products/RestockForm';
 import EditProductForm from './modules/products/EditProductForm';
+
+// Módulos de Proveedores
 import SupplierPaymentForm from './modules/products/SupplierPaymentForm';
 import SupplierAccount from './modules/products/SupplierAccount';
-import Login from './modules/auth/Login'; // Si ya creaste el login
 
 function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Layout />}>
           
-          <Route path="/" element={<Layout />}>
-            {/* Ahora el index carga el Dashboard con pestañas */}
-            <Route index element={<ShopDashboard />} />
-            
-            <Route path="nuevo-producto" element={<AddProductForm />} />
-            <Route path="reponer-stock" element={<RestockForm />} />
-            <Route path="editar-producto/:id" element={<EditProductForm />} />
-            <Route path="pago-proveedores" element={<SupplierPaymentForm />} />
-            <Route path="cuenta-proveedores" element={<SupplierAccount />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+          {/* Ruta principal: Carga el Dashboard con Pestañas */}
+          <Route index element={<ShopDashboard />} />
+          
+          {/* Rutas de Gestión */}
+          <Route path="nuevo-producto" element={<AddProductForm />} />
+          <Route path="reponer-stock" element={<RestockForm />} />
+          <Route path="editar-producto/:id" element={<EditProductForm />} />
+          
+          {/* Rutas de Proveedores */}
+          <Route path="pago-proveedores" element={<SupplierPaymentForm />} />
+          <Route path="cuenta-proveedores" element={<SupplierAccount />} />
+          
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }
 
