@@ -1,19 +1,121 @@
 import { db } from "../../firebase/config";
 import { 
-  collection, addDoc, getDocs, doc, updateDoc, getDoc, writeBatch, Timestamp, query, orderBy 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  getDoc,       // Nuevo
+  writeBatch,   // Nuevo
+  query,        // Nuevo
+  orderBy,      // Nuevo
+  Timestamp 
 } from "firebase/firestore";
 
 const PRODUCTS_COLLECTION = "products";
 const PAYMENTS_COLLECTION = "supplier_payments";
 const SALES_COLLECTION = "sales";
 
-// ... (createProduct, getProducts, updateProductStock, createSupplierPayment SE MANTIENEN IGUAL) ...
-// Copia tus funciones anteriores aquí (createProduct, getProducts, etc.) o pídeme si quieres que repita todo el archivo.
-
-// --- NUEVAS FUNCIONES ---
+// --- FUNCIONES BÁSICAS DE PRODUCTOS ---
 
 /**
- * 5. Obtiene un solo producto por ID (Para la edición)
+ * 1. Crea un nuevo producto
+ */
+export const createProduct = async (productData) => {
+  try {
+    const payload = {
+      ...productData,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+      costoBulto: parseFloat(productData.costoBulto),
+      cantidadBulto: parseInt(productData.cantidadBulto),
+      cantidadComprada: parseInt(productData.cantidadComprada), 
+      margenGanancia: parseFloat(productData.margenGanancia),
+      precioVenta: parseFloat(productData.precioVenta),
+      costoUnitario: parseFloat(productData.costoUnitario),
+      stockActual: parseInt(productData.cantidadComprada) // Stock inicial directo
+    };
+
+    const docRef = await addDoc(collection(db, PRODUCTS_COLLECTION), payload);
+    return { success: true, id: docRef.id };
+  } catch (error) {
+    console.error("Error al guardar producto:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 2. Obtiene la lista de productos
+ */
+export const getProducts = async () => {
+  try {
+    const querySnapshot = await getDocs(collection(db, PRODUCTS_COLLECTION));
+    const products = querySnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    return { success: true, data: products };
+  } catch (error) {
+    console.error("Error al obtener productos:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 3. Reponer Stock (Actualiza cantidad y costos)
+ */
+export const updateProductStock = async (id, data) => {
+  try {
+    const productRef = doc(db, PRODUCTS_COLLECTION, id);
+    await updateDoc(productRef, {
+      ...data,
+      updatedAt: Timestamp.now()
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Error al actualizar stock:", error);
+    return { success: false, error };
+  }
+};
+
+// --- FUNCIONES DE PROVEEDORES ---
+
+/**
+ * 4. Registrar Pago a Proveedor
+ */
+export const createSupplierPayment = async (paymentData) => {
+  try {
+    const payload = {
+      ...paymentData,
+      createdAt: Timestamp.now(),
+      monto: parseFloat(paymentData.monto)
+    };
+    await addDoc(collection(db, PAYMENTS_COLLECTION), payload);
+    return { success: true };
+  } catch (error) {
+    console.error("Error al registrar pago:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 5. Ver Historial de Pagos
+ */
+export const getSupplierPayments = async () => {
+  try {
+    const q = query(collection(db, PAYMENTS_COLLECTION), orderBy("createdAt", "desc"));
+    const querySnapshot = await getDocs(q);
+    const payments = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return { success: true, data: payments };
+  } catch (error) {
+    return { success: false, error };
+  }
+};
+
+// --- FUNCIONES NUEVAS (EDICIÓN Y VENTAS) ---
+
+/**
+ * 6. Obtener un producto por ID (Para editar)
  */
 export const getProductById = async (id) => {
   try {
@@ -29,7 +131,7 @@ export const getProductById = async (id) => {
 };
 
 /**
- * 6. Edita un producto completo (Admin)
+ * 7. Editar Producto (Admin)
  */
 export const updateProduct = async (id, data) => {
   try {
@@ -46,44 +148,29 @@ export const updateProduct = async (id, data) => {
 };
 
 /**
- * 7. Obtiene el historial de pagos a proveedores
- */
-export const getSupplierPayments = async () => {
-  try {
-    // Ordenamos por fecha de creación descendente (lo más nuevo arriba)
-    const q = query(collection(db, PAYMENTS_COLLECTION), orderBy("createdAt", "desc"));
-    const querySnapshot = await getDocs(q);
-    const payments = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    return { success: true, data: payments };
-  } catch (error) {
-    return { success: false, error };
-  }
-};
-
-/**
- * 8. REGISTRAR VENTA (POS): Crea la venta y descuenta stock en una sola operación
+ * 8. REGISTRAR VENTA (Descuenta stock masivamente)
  */
 export const registerSale = async (cartItems, total, paymentMethod) => {
   try {
     const batch = writeBatch(db);
 
-    // 1. Crear el registro de venta
+    // A. Crear registro de venta
     const saleRef = doc(collection(db, SALES_COLLECTION));
     batch.set(saleRef, {
-      items: cartItems, // Guardamos qué se vendió
+      items: cartItems,
       total: total,
-      metodoPago: paymentMethod, // 'Efectivo' o 'Mercado Pago'
+      metodoPago: paymentMethod,
       createdAt: Timestamp.now()
     });
 
-    // 2. Descontar stock de cada producto
+    // B. Descontar stock
     cartItems.forEach((item) => {
       const productRef = doc(db, PRODUCTS_COLLECTION, item.id);
-      const newStock = item.stockActual - item.cantidadVenta;
+      const newStock = parseInt(item.stockActual) - parseInt(item.cantidadVenta);
       batch.update(productRef, { stockActual: newStock });
     });
 
-    // 3. Ejecutar todo junto
+    // C. Ejecutar todo
     await batch.commit();
     return { success: true };
   } catch (error) {
