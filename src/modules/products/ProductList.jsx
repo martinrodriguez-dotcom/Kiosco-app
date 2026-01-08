@@ -1,36 +1,50 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { getProducts, registerSale } from './productsService';
-import { Plus, Minus, Search, ShoppingCart, Trash2, X, CreditCard, Banknote, Edit, CheckCircle } from 'lucide-react';
+import { 
+  Plus, Minus, Search, ShoppingCart, Trash2, X, CreditCard, Banknote, 
+  Edit, CheckCircle, ScanBarcode, Camera, ArrowLeft 
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import BarcodeScanner from './BarcodeScanner'; // Asegúrate de tener este componente creado
 
 const ProductList = () => {
+  // --- ESTADOS DE DATOS ---
   const [products, setProducts] = useState([]);
   const [filteredProducts, setFilteredProducts] = useState([]);
-  const [cart, setCart] = useState([]);
-  const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   
-  // Estados para Modales
-  const [productToSell, setProductToSell] = useState(null); // Producto seleccionado para elegir cantidad
+  // --- ESTADOS DE VENTA ---
+  const [isSaleMode, setIsSaleMode] = useState(false); // ¿Estamos en "Modo Venta"?
+  const [cart, setCart] = useState([]);
+  const [barcodeInput, setBarcodeInput] = useState(''); // Lo que escribe la pistola USB
+  
+  // --- ESTADOS DE MODALES ---
+  const [productToSell, setProductToSell] = useState(null); // Modal manual de cantidad
   const [qtyInput, setQtyInput] = useState(1);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [showCamera, setShowCamera] = useState(false); // Cámara del celular
 
+  const barcodeInputRef = useRef(null); // Para mantener el foco siempre en el input
   const navigate = useNavigate();
+
+  // Sonido de escaneo
+  const playBeep = () => {
+    new Audio('https://codeskulptor-demos.commondatastorage.googleapis.com/pang/pop.mp3')
+      .play()
+      .catch(e => console.log("Audio play failed", e));
+  };
 
   useEffect(() => {
     fetchProducts();
   }, []);
 
+  // Mantener el foco en el input de pistola cuando estamos en modo venta
   useEffect(() => {
-    // Filtrado en tiempo real
-    const lowerTerm = searchTerm.toLowerCase();
-    const filtered = products.filter(p => 
-      p.nombre.toLowerCase().includes(lowerTerm) || 
-      (p.codigoBarras && p.codigoBarras.includes(lowerTerm))
-    );
-    setFilteredProducts(filtered);
-  }, [searchTerm, products]);
+    if (isSaleMode && barcodeInputRef.current) {
+      barcodeInputRef.current.focus();
+    }
+  }, [isSaleMode, cart]); // Refocalizar cada vez que el carrito cambia
 
   const fetchProducts = async () => {
     const result = await getProducts();
@@ -41,34 +55,61 @@ const ProductList = () => {
     setLoading(false);
   };
 
-  // --- 1. ABRIR MODAL DE CANTIDAD ---
-  const initiateSale = (product) => {
-    setProductToSell(product);
-    setQtyInput(1); // Resetear a 1
+  // --- LÓGICA DE ESCANEO (CÁMARA Y USB) ---
+  
+  // Función central: Recibe un código y busca el producto
+  const processBarcode = (code) => {
+    const product = products.find(p => p.codigoBarras === code);
+    
+    if (product) {
+      if (product.stockActual <= 0) {
+        alert(`⚠️ El producto "${product.nombre}" no tiene stock.`);
+        return;
+      }
+      addToCartDirect(product, 1);
+      playBeep(); // Feedback auditivo
+      setBarcodeInput(''); // Limpiar input para el siguiente disparo
+    } else {
+      alert("Producto no encontrado con ese código.");
+    }
   };
 
-  // --- 2. AGREGAR AL CARRITO (Desde el Modal) ---
-  const addToCart = () => {
+  // Manejador del Input USB (Detecta el Enter de la pistola)
+  const handleUSBInput = (e) => {
+    if (e.key === 'Enter') {
+      if (barcodeInput.trim() !== '') {
+        processBarcode(barcodeInput);
+      }
+    }
+  };
+
+  // --- LÓGICA DEL CARRITO ---
+
+  // Agregar directo (para el escáner)
+  const addToCartDirect = (product, qty = 1) => {
+    setCart(prevCart => {
+      const existing = prevCart.find(item => item.id === product.id);
+      if (existing) {
+        // Si ya existe, sumamos cantidad
+        if (existing.cantidadVenta + qty > product.stockActual) {
+           alert("Stock insuficiente");
+           return prevCart;
+        }
+        return prevCart.map(item => 
+          item.id === product.id ? { ...item, cantidadVenta: item.cantidadVenta + qty } : item
+        );
+      } else {
+        // Si es nuevo
+        return [...prevCart, { ...product, cantidadVenta: qty }];
+      }
+    });
+  };
+
+  // Agregar manual (desde el listado visual)
+  const addToCartManual = () => {
     if (!productToSell) return;
-    const qty = parseInt(qtyInput);
-
-    if (qty > productToSell.stockActual) {
-      alert("⚠️ Stock insuficiente");
-      return;
-    }
-
-    const existingItem = cart.find(item => item.id === productToSell.id);
-    if (existingItem) {
-      const newCart = cart.map(item => 
-        item.id === productToSell.id ? { ...item, cantidadVenta: item.cantidadVenta + qty } : item
-      );
-      setCart(newCart);
-    } else {
-      setCart([...cart, { ...productToSell, cantidadVenta: qty }]);
-    }
-    
-    setProductToSell(null); // Cerrar modal
-    setSearchTerm(''); // Limpiar busqueda opcionalmente
+    addToCartDirect(productToSell, qtyInput);
+    setProductToSell(null);
   };
 
   const removeFromCart = (index) => {
@@ -77,161 +118,279 @@ const ProductList = () => {
     setCart(newCart);
   };
 
+  // Ajustar cantidad en el resumen (+ / -)
+  const updateCartQty = (index, delta) => {
+    const newCart = [...cart];
+    const item = newCart[index];
+    const newQty = item.cantidadVenta + delta;
+
+    if (newQty > 0 && newQty <= item.stockActual) {
+      item.cantidadVenta = newQty;
+      setCart(newCart);
+    }
+  };
+
   const totalVenta = cart.reduce((acc, item) => acc + (item.precioVenta * item.cantidadVenta), 0);
 
-  // --- 3. COBRAR ---
+  // --- COBRO ---
   const handleCobrar = async (metodo) => {
     if (cart.length === 0) return;
     const result = await registerSale(cart, totalVenta, metodo);
     if (result.success) {
       setShowPaymentModal(false);
-      setShowSuccessModal(true); // Mostrar éxito
+      setShowSuccessModal(true);
       setCart([]);
-      fetchProducts(); 
-      setTimeout(() => setShowSuccessModal(false), 2000); // Ocultar éxito a los 2 seg
+      setIsSaleMode(false); // Salir del modo venta
+      fetchProducts();
+      setTimeout(() => setShowSuccessModal(false), 2000);
     }
   };
 
-  return (
-    <div className="relative min-h-[500px]">
-      
-      {/* BARRA DE TOTAL (Sticky: se pega arriba pero empuja el contenido) */}
-      <div className={`sticky top-0 z-30 bg-white shadow-md border-b transition-all duration-300 ${cart.length > 0 ? 'translate-y-0' : '-translate-y-full absolute w-full'}`}>
-        {cart.length > 0 && (
-          <div className="p-4 flex justify-between items-center bg-blue-900 text-white">
-            <div className="flex flex-col">
-              <span className="text-xs text-blue-300 font-bold uppercase tracking-wide">Total a Cobrar</span>
-              <span className="text-3xl font-bold">${totalVenta}</span>
-              <span className="text-xs text-blue-200">{cart.length} productos</span>
+  // ------------------------------------------------------------------
+  // INTERFAZ: MODO "VENTA ACTIVA" (POS)
+  // ------------------------------------------------------------------
+  if (isSaleMode) {
+    return (
+      <div className="min-h-screen bg-gray-100 pb-32">
+        {/* Header Venta */}
+        <div className="bg-blue-900 text-white p-4 sticky top-0 z-40 shadow-md flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setIsSaleMode(false)} className="p-2 hover:bg-blue-800 rounded-full transition">
+              <ArrowLeft />
+            </button>
+            <div>
+              <h2 className="font-bold text-lg leading-tight">Nueva Venta</h2>
+              <p className="text-xs text-blue-300">Escanea productos para agregar</p>
             </div>
+          </div>
+          <div className="text-right">
+            <span className="block text-xs uppercase text-blue-300">Total Actual</span>
+            <span className="font-bold text-2xl">${totalVenta}</span>
+          </div>
+        </div>
+
+        {/* CÁMARA OVERLAY */}
+        {showCamera && (
+          <BarcodeScanner 
+            onScanSuccess={(code) => { processBarcode(code); setShowCamera(false); }} 
+            onClose={() => setShowCamera(false)} 
+          />
+        )}
+
+        <div className="p-4 max-w-4xl mx-auto grid gap-6">
+          
+          {/* 1. SECCIÓN DE ESCANEO (INPUT GIGANTE) */}
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-blue-100 flex gap-2">
+             <div className="relative flex-1">
+                <ScanBarcode className="absolute left-4 top-4 text-gray-400" />
+                <input 
+                  ref={barcodeInputRef}
+                  type="text" 
+                  value={barcodeInput}
+                  onChange={(e) => setBarcodeInput(e.target.value)}
+                  onKeyDown={handleUSBInput}
+                  className="w-full pl-12 p-3 text-lg font-bold border-2 border-blue-200 rounded-lg focus:border-blue-600 outline-none transition"
+                  placeholder="Dispara aquí con la pistola USB..."
+                  autoComplete="off"
+                />
+             </div>
+             <button 
+                onClick={() => setShowCamera(true)}
+                className="bg-blue-600 text-white p-3 rounded-lg hover:bg-blue-700 shadow-md"
+             >
+               <Camera size={28} />
+             </button>
+          </div>
+
+          {/* 2. EL TICKET (LISTA DE PRODUCTOS) */}
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden min-h-[300px]">
+            <div className="bg-gray-50 p-3 border-b flex justify-between items-center">
+              <span className="font-bold text-gray-600">Detalle ({cart.length} items)</span>
+              <button onClick={() => setCart([])} className="text-red-500 text-xs hover:underline">Vaciar Carrito</button>
+            </div>
+
+            <div className="divide-y divide-gray-100">
+              {cart.length === 0 ? (
+                <div className="p-10 text-center text-gray-400 flex flex-col items-center">
+                  <ShoppingCart size={48} className="mb-2 opacity-20" />
+                  <p>Escanea un producto para comenzar...</p>
+                </div>
+              ) : (
+                cart.map((item, idx) => (
+                  <div key={idx} className="p-4 flex justify-between items-center hover:bg-blue-50 transition">
+                    <div className="flex-1">
+                      <h4 className="font-bold text-gray-800">{item.nombre}</h4>
+                      <p className="text-xs text-gray-400">{item.codigoBarras}</p>
+                      <div className="text-blue-600 font-bold">${item.precioVenta} x unidad</div>
+                    </div>
+                    
+                    {/* Controles de Cantidad */}
+                    <div className="flex items-center gap-3 mr-4">
+                      <button onClick={() => updateCartQty(idx, -1)} className="p-1 bg-gray-100 rounded hover:bg-gray-200"><Minus size={16}/></button>
+                      <span className="font-bold w-6 text-center">{item.cantidadVenta}</span>
+                      <button onClick={() => updateCartQty(idx, 1)} className="p-1 bg-gray-100 rounded hover:bg-gray-200"><Plus size={16}/></button>
+                    </div>
+
+                    <div className="text-right min-w-[80px]">
+                      <div className="font-bold text-lg">${item.precioVenta * item.cantidadVenta}</div>
+                      <button onClick={() => removeFromCart(idx)} className="text-red-400 hover:text-red-600 text-xs mt-1 flex items-center justify-end gap-1">
+                        <Trash2 size={12}/> Quitar
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 3. BOTÓN CERRAR VENTA (FIXED BOTTOM) */}
+        {cart.length > 0 && (
+          <div className="fixed bottom-0 left-0 w-full bg-white border-t p-4 shadow-lg z-50 flex justify-center">
             <button 
               onClick={() => setShowPaymentModal(true)}
-              className="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg transform active:scale-95 transition flex items-center gap-2"
+              className="bg-green-600 hover:bg-green-700 text-white w-full max-w-md py-4 rounded-xl font-bold text-xl shadow-lg flex items-center justify-center gap-2 animate-bounce-short"
             >
-              <ShoppingCart size={20} /> COBRAR
+              CERRAR VENTA (${totalVenta})
             </button>
           </div>
         )}
-      </div>
 
-      {/* BUSCADOR */}
-      <div className="p-4 bg-gray-50 sticky top-0 z-20"> 
-        <div className="relative">
+        {/* --- MODAL CONFIRMACIÓN DE VENTA --- */}
+        {showPaymentModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-fadeIn">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+              
+              {/* Header Modal */}
+              <div className="bg-gray-50 p-4 border-b flex justify-between items-center">
+                <h2 className="text-xl font-bold text-gray-800">Resumen de Cobro</h2>
+                <button onClick={() => setShowPaymentModal(false)} className="p-2 bg-white rounded-full shadow-sm"><X size={20}/></button>
+              </div>
+
+              {/* Body con Scroll: El detalle que pediste */}
+              <div className="p-4 overflow-y-auto flex-1 bg-gray-50/50">
+                <div className="bg-white rounded-lg border p-3 shadow-sm mb-4">
+                  <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Detalle de Productos</h3>
+                  {cart.map((item, i) => (
+                    <div key={i} className="flex justify-between text-sm py-1 border-b last:border-0 border-dashed">
+                      <span className="text-gray-600">{item.cantidadVenta} x {item.nombre}</span>
+                      <span className="font-bold text-gray-800">${item.precioVenta * item.cantidadVenta}</span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between items-center mt-3 pt-3 border-t-2 border-gray-100">
+                    <span className="font-bold text-gray-600 text-lg">TOTAL A PAGAR</span>
+                    <span className="font-black text-blue-600 text-2xl">${totalVenta}</span>
+                  </div>
+                </div>
+
+                <p className="text-center text-gray-500 text-sm mb-2">Seleccione medio de pago</p>
+                
+                <div className="grid gap-3">
+                  <button onClick={() => handleCobrar('Efectivo')} className="flex items-center justify-between p-4 bg-green-100 border border-green-200 rounded-xl hover:bg-green-200 transition group">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-green-600 text-white p-2 rounded-lg"><Banknote size={24}/></div>
+                      <span className="font-bold text-green-900 text-lg">Efectivo</span>
+                    </div>
+                    <div className="h-4 w-4 rounded-full border-2 border-green-400 group-hover:bg-green-600"></div>
+                  </button>
+
+                  <button onClick={() => handleCobrar('Mercado Pago')} className="flex items-center justify-between p-4 bg-blue-100 border border-blue-200 rounded-xl hover:bg-blue-200 transition group">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-600 text-white p-2 rounded-lg"><CreditCard size={24}/></div>
+                      <span className="font-bold text-blue-900 text-lg">Mercado Pago</span>
+                    </div>
+                    <div className="h-4 w-4 rounded-full border-2 border-blue-400 group-hover:bg-blue-600"></div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // INTERFAZ: MODO "CATÁLOGO" (LISTA NORMAL)
+  // ------------------------------------------------------------------
+  return (
+    <div className="min-h-screen pb-24 relative">
+      
+      {/* BOTÓN GIGANTE PARA ABRIR CAJA */}
+      <div className="p-4 bg-white sticky top-0 z-20 shadow-sm">
+        <button 
+          onClick={() => setIsSaleMode(true)}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl shadow-lg flex items-center justify-center gap-3 transition transform active:scale-95"
+        >
+          <ScanBarcode size={28} />
+          <div className="text-left">
+            <span className="block font-black text-xl leading-none">ABRIR NUEVA VENTA</span>
+            <span className="text-blue-200 text-xs">Modo Escáner / Caja Rápida</span>
+          </div>
+        </button>
+
+        {/* Buscador Simple */}
+        <div className="mt-3 relative">
           <Search className="absolute left-3 top-3 text-gray-400" size={20} />
           <input 
             type="text" 
-            placeholder="🔍 Buscar producto..." 
-            className="w-full pl-10 p-3 rounded-xl border-gray-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="🔍 Buscar producto en lista..." 
+            className="w-full pl-10 p-3 rounded-lg border bg-gray-50 outline-none focus:ring-2 focus:ring-blue-100"
+            onChange={(e) => {
+               const term = e.target.value.toLowerCase();
+               setFilteredProducts(products.filter(p => p.nombre.toLowerCase().includes(term)));
+            }}
           />
         </div>
       </div>
 
-      {/* LISTA DE PRODUCTOS */}
-      <div className="px-4 pb-24 space-y-3">
-        {loading ? <p className="text-center mt-10 text-gray-400">Cargando catálogo...</p> : (
+      {/* Lista Normal (Para ver precios o editar) */}
+      <div className="px-4 py-2 space-y-3">
+        {loading ? <p className="text-center text-gray-400 mt-10">Cargando...</p> : (
           filteredProducts.map((prod) => (
-            <div 
-              key={prod.id} 
-              onClick={() => prod.stockActual > 0 && initiateSale(prod)}
-              className={`bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex justify-between items-center transition active:bg-blue-50 cursor-pointer ${prod.stockActual <= 0 ? 'opacity-50 grayscale' : ''}`}
-            >
+            <div key={prod.id} onClick={() => { setProductToSell(prod); setQtyInput(1); }} className="bg-white p-4 rounded-lg border border-gray-100 flex justify-between items-center cursor-pointer hover:border-blue-300 transition">
               <div>
-                <h3 className="font-bold text-gray-800 text-lg">{prod.nombre}</h3>
-                <p className={`text-sm ${prod.stockActual > 0 ? 'text-gray-500' : 'text-red-500 font-bold'}`}>
-                  {prod.stockActual > 0 ? `${prod.stockActual} u. disponibles` : 'SIN STOCK'}
-                </p>
+                <h3 className="font-bold text-gray-800">{prod.nombre}</h3>
+                <p className="text-sm text-gray-500">Stock: {prod.stockActual}</p>
               </div>
-              <div className="flex flex-col items-end">
-                 <span className="text-2xl font-bold text-blue-600">${prod.precioVenta}</span>
-                 {/* Botón Editar Discreto */}
-                 <button onClick={(e) => { e.stopPropagation(); navigate(`/editar-producto/${prod.id}`); }} className="text-gray-300 p-1 hover:text-blue-500"><Edit size={16}/></button>
+              <div className="text-right">
+                <span className="block font-bold text-blue-600 text-lg">${prod.precioVenta}</span>
+                <button onClick={(e) => { e.stopPropagation(); navigate(`/editar-producto/${prod.id}`); }} className="text-xs text-gray-300 hover:text-blue-500 mt-1 flex items-center justify-end gap-1">
+                  <Edit size={12}/> Editar
+                </button>
               </div>
             </div>
           ))
         )}
       </div>
 
-      {/* --- MODAL 1: SELECCIONAR CANTIDAD --- */}
+      {/* Modal Simple para agregar manual desde la lista */}
       {productToSell && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xs p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-gray-800 text-lg truncate pr-2">{productToSell.nombre}</h3>
-              <button onClick={() => setProductToSell(null)} className="p-1 bg-gray-100 rounded-full"><X size={20}/></button>
-            </div>
-            
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white p-6 rounded-xl w-full max-w-xs shadow-2xl">
+            <h3 className="font-bold text-lg mb-4">{productToSell.nombre}</h3>
             <div className="flex items-center justify-center gap-4 mb-6">
-              <button onClick={() => qtyInput > 1 && setQtyInput(qtyInput - 1)} className="p-3 bg-gray-100 rounded-xl hover:bg-gray-200 active:bg-gray-300"><Minus/></button>
-              <input 
-                type="number" 
-                className="w-20 text-center text-3xl font-bold border-none outline-none" 
-                value={qtyInput} 
-                onChange={(e) => setQtyInput(Math.max(1, parseInt(e.target.value) || 1))}
-              />
-              <button onClick={() => setQtyInput(qtyInput + 1)} className="p-3 bg-gray-100 rounded-xl hover:bg-gray-200 active:bg-gray-300"><Plus/></button>
+              <button onClick={() => setQtyInput(Math.max(1, qtyInput - 1))} className="p-2 bg-gray-100 rounded"><Minus/></button>
+              <span className="text-2xl font-bold">{qtyInput}</span>
+              <button onClick={() => setQtyInput(qtyInput + 1)} className="p-2 bg-gray-100 rounded"><Plus/></button>
             </div>
-
-            <div className="text-center mb-6 text-gray-500">
-              Subtotal: <span className="font-bold text-gray-800">${qtyInput * productToSell.precioVenta}</span>
-            </div>
-
-            <button onClick={addToCart} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-700 shadow-lg">
-              Agregar al Carrito
+            <button onClick={() => { addToCartDirect(productToSell, qtyInput); setProductToSell(null); setIsSaleMode(true); }} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">
+              Agregar y Abrir Caja
             </button>
+            <button onClick={() => setProductToSell(null)} className="w-full mt-2 py-2 text-gray-500 text-sm">Cancelar</button>
           </div>
         </div>
       )}
 
-      {/* --- MODAL 2: CONFIRMAR PAGO --- */}
-      {showPaymentModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center animate-fadeIn">
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl w-full max-w-sm p-6 pb-10 sm:pb-6">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-800">Método de Pago</h2>
-              <button onClick={() => setShowPaymentModal(false)} className="p-2 bg-gray-100 rounded-full"><X size={20}/></button>
-            </div>
-            
-            <div className="text-center mb-8">
-              <span className="text-gray-400 text-sm">Total a pagar</span>
-              <div className="text-5xl font-black text-gray-900 mt-2">${totalVenta}</div>
-            </div>
-
-            <div className="grid gap-3">
-              <button onClick={() => handleCobrar('Efectivo')} className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-xl hover:bg-green-100 transition group">
-                <div className="flex items-center gap-3">
-                  <div className="bg-green-500 text-white p-2 rounded-lg"><Banknote size={24}/></div>
-                  <span className="font-bold text-green-900 text-lg">Efectivo</span>
-                </div>
-                <div className="h-4 w-4 rounded-full border-2 border-green-300 group-hover:bg-green-500"></div>
-              </button>
-
-              <button onClick={() => handleCobrar('Mercado Pago')} className="flex items-center justify-between p-4 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition group">
-                <div className="flex items-center gap-3">
-                  <div className="bg-blue-500 text-white p-2 rounded-lg"><CreditCard size={24}/></div>
-                  <span className="font-bold text-blue-900 text-lg">Mercado Pago</span>
-                </div>
-                <div className="h-4 w-4 rounded-full border-2 border-blue-300 group-hover:bg-blue-500"></div>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* --- MODAL 3: ÉXITO --- */}
+      {/* Modal Éxito */}
       {showSuccessModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/90 backdrop-blur-md animate-fadeIn">
-          <div className="text-center transform scale-110">
-            <div className="bg-green-100 text-green-600 rounded-full p-6 inline-block mb-4 shadow-lg animate-bounce">
-              <CheckCircle size={64} />
-            </div>
-            <h2 className="text-3xl font-black text-gray-800">¡Venta Exitosa!</h2>
-            <p className="text-gray-500 mt-2">Guardando en caja...</p>
-          </div>
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-white/90 backdrop-blur-md">
+           <div className="text-center animate-bounce">
+              <CheckCircle size={80} className="text-green-500 mx-auto mb-4"/>
+              <h2 className="text-3xl font-black text-gray-800">¡Venta Registrada!</h2>
+           </div>
         </div>
       )}
-
     </div>
   );
 };
