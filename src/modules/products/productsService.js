@@ -9,40 +9,188 @@ import {
   writeBatch, 
   query, 
   orderBy, 
-  where,
   Timestamp 
 } from "firebase/firestore";
 
 const PRODUCTS_COLLECTION = "products";
 const PAYMENTS_COLLECTION = "supplier_payments";
 const SALES_COLLECTION = "sales";
-const CASHBOX_HISTORY_COLLECTION = "cashbox_history"; // Nueva colección
+const CASHBOX_HISTORY_COLLECTION = "cashbox_history";
 
-// ... (Tus funciones anteriores: createProduct, getProducts, updateProductStock, etc. SE MANTIENEN IGUAL)
-// Copia aquí las funciones createProduct, getProducts, updateProductStock, getProductById, updateProduct, createSupplierPayment, getSupplierPayments
-// RECUERDA NO BORRARLAS. Aquí solo pongo las nuevas o modificadas para ahorrar espacio visual, pero tú mantén todo.
+// --- GESTIÓN DE PRODUCTOS ---
 
-// --- REPETICIÓN RÁPIDA DE FUNCIONES BÁSICAS PARA QUE NO SE PIERDAN ---
-export const createProduct = async (productData) => { /* ... código igual al anterior ... */ try { const payload = { ...productData, createdAt: Timestamp.now(), updatedAt: Timestamp.now(), costoBulto: parseFloat(productData.costoBulto), cantidadBulto: parseInt(productData.cantidadBulto), cantidadComprada: parseInt(productData.cantidadComprada), margenGanancia: parseFloat(productData.margenGanancia), precioVenta: parseFloat(productData.precioVenta), costoUnitario: parseFloat(productData.costoUnitario), stockActual: parseInt(productData.cantidadComprada) }; const docRef = await addDoc(collection(db, PRODUCTS_COLLECTION), payload); return { success: true, id: docRef.id }; } catch (error) { return { success: false, error }; } };
-export const getProducts = async () => { /* ... */ try { const q = await getDocs(collection(db, PRODUCTS_COLLECTION)); return { success: true, data: q.docs.map(d => ({ id: d.id, ...d.data() })) }; } catch (e) { return { success: false, error: e }; } };
-export const updateProductStock = async (id, data) => { try { await updateDoc(doc(db, PRODUCTS_COLLECTION, id), { ...data, updatedAt: Timestamp.now() }); return { success: true }; } catch (e) { return { success: false, error: e }; } };
-export const getProductById = async (id) => { try { const d = await getDoc(doc(db, PRODUCTS_COLLECTION, id)); return d.exists() ? { success: true, data: { id: d.id, ...d.data() } } : { success: false }; } catch (e) { return { success: false, error: e }; } };
-export const updateProduct = async (id, data) => { try { await updateDoc(doc(db, PRODUCTS_COLLECTION, id), { ...data, updatedAt: Timestamp.now() }); return { success: true }; } catch (e) { return { success: false, error: e }; } };
-export const createSupplierPayment = async (d) => { try { await addDoc(collection(db, PAYMENTS_COLLECTION), { ...d, createdAt: Timestamp.now(), monto: parseFloat(d.monto) }); return { success: true }; } catch (e) { return { success: false, error: e }; } };
-export const getSupplierPayments = async () => { try { const q = query(collection(db, PAYMENTS_COLLECTION), orderBy("createdAt", "desc")); const s = await getDocs(q); return { success: true, data: s.docs.map(d => ({ id: d.id, ...d.data() })) }; } catch (e) { return { success: false, error: e }; } };
-export const registerSale = async (cart, total, method) => { try { const b = writeBatch(db); const r = doc(collection(db, SALES_COLLECTION)); b.set(r, { items: cart, total, metodoPago: method, createdAt: Timestamp.now(), isClosed: false }); cart.forEach(i => { const p = doc(db, PRODUCTS_COLLECTION, i.id); b.update(p, { stockActual: parseInt(i.stockActual) - parseInt(i.cantidadVenta) }); }); await b.commit(); return { success: true }; } catch (e) { return { success: false, error: e }; } };
+/**
+ * 1. Crea un nuevo producto
+ */
+export const createProduct = async (productData) => {
+  try {
+    const payload = {
+      ...productData,
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+      costoBulto: parseFloat(productData.costoBulto),
+      cantidadBulto: parseInt(productData.cantidadBulto),
+      cantidadComprada: parseInt(productData.cantidadComprada), 
+      margenGanancia: parseFloat(productData.margenGanancia),
+      precioVenta: parseFloat(productData.precioVenta),
+      costoUnitario: parseFloat(productData.costoUnitario),
+      stockActual: parseInt(productData.cantidadComprada) // Stock inicial
+    };
 
-// --- CAMBIOS IMPORTANTES DESDE AQUÍ ---
+    const docRef = await addDoc(collection(db, PRODUCTS_COLLECTION), payload);
+    return { success: true, id: docRef.id };
+  } catch (error) {
+    console.error("Error al guardar producto:", error);
+    return { success: false, error };
+  }
+};
 
-// Modificamos getSales para traer solo las ventas "abiertas" (NO cerradas)
+/**
+ * 2. Obtiene todos los productos (Catálogo)
+ */
+export const getProducts = async () => {
+  try {
+    const querySnapshot = await getDocs(collection(db, PRODUCTS_COLLECTION));
+    const products = querySnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    return { success: true, data: products };
+  } catch (error) {
+    console.error("Error al obtener productos:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 3. Actualiza stock (Reposición rápida)
+ */
+export const updateProductStock = async (id, data) => {
+  try {
+    const productRef = doc(db, PRODUCTS_COLLECTION, id);
+    await updateDoc(productRef, {
+      ...data,
+      updatedAt: Timestamp.now()
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Error al actualizar stock:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 4. Obtiene un producto por ID (Para edición)
+ */
+export const getProductById = async (id) => {
+  try {
+    const docRef = doc(db, PRODUCTS_COLLECTION, id);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return { success: true, data: { id: docSnap.id, ...docSnap.data() } };
+    }
+    return { success: false, error: "Producto no encontrado" };
+  } catch (error) {
+    return { success: false, error };
+  }
+};
+
+/**
+ * 5. Actualiza un producto completo (Edición Admin)
+ */
+export const updateProduct = async (id, data) => {
+  try {
+    const productRef = doc(db, PRODUCTS_COLLECTION, id);
+    await updateDoc(productRef, {
+      ...data,
+      updatedAt: Timestamp.now()
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Error al editar producto:", error);
+    return { success: false, error };
+  }
+};
+
+// --- GESTIÓN DE PROVEEDORES ---
+
+/**
+ * 6. Registra pago a proveedor
+ */
+export const createSupplierPayment = async (paymentData) => {
+  try {
+    const payload = {
+      ...paymentData,
+      createdAt: Timestamp.now(),
+      monto: parseFloat(paymentData.monto)
+    };
+    await addDoc(collection(db, PAYMENTS_COLLECTION), payload);
+    return { success: true };
+  } catch (error) {
+    console.error("Error al registrar pago:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 7. Historial de pagos a proveedores
+ */
+export const getSupplierPayments = async () => {
+  try {
+    const q = query(collection(db, PAYMENTS_COLLECTION), orderBy("createdAt", "desc"));
+    const querySnapshot = await getDocs(q);
+    const payments = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return { success: true, data: payments };
+  } catch (error) {
+    return { success: false, error };
+  }
+};
+
+// --- GESTIÓN DE VENTAS Y CAJA ---
+
+/**
+ * 8. Registrar Venta (Descuenta stock y guarda registro)
+ */
+export const registerSale = async (cartItems, total, paymentMethod) => {
+  try {
+    const batch = writeBatch(db);
+
+    // A. Crear registro de venta (Abierta por defecto)
+    const saleRef = doc(collection(db, SALES_COLLECTION));
+    batch.set(saleRef, {
+      items: cartItems,
+      total: total,
+      metodoPago: paymentMethod,
+      createdAt: Timestamp.now(),
+      isClosed: false // Importante para el cierre de caja
+    });
+
+    // B. Descontar stock
+    cartItems.forEach((item) => {
+      const productRef = doc(db, PRODUCTS_COLLECTION, item.id);
+      const newStock = parseInt(item.stockActual) - parseInt(item.cantidadVenta);
+      batch.update(productRef, { stockActual: newStock });
+    });
+
+    // C. Ejecutar todo
+    await batch.commit();
+    return { success: true };
+  } catch (error) {
+    console.error("Error en la venta:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 9. Obtener Ventas Activas (Solo las NO cerradas)
+ */
 export const getActiveSales = async () => {
   try {
-    // Traemos ventas ordenadas por fecha. Filtramos en cliente o usamos un índice compuesto.
-    // Para simplificar sin crear índices complejos manuales, traemos todas y filtramos las cerradas.
+    // Traemos ordenado por fecha
     const q = query(collection(db, SALES_COLLECTION), orderBy("createdAt", "desc"));
     const querySnapshot = await getDocs(q);
     
-    // Filtramos solo las que NO tienen isClosed = true
+    // Filtramos en memoria las que no están cerradas (isClosed != true)
     const sales = querySnapshot.docs
       .map(doc => ({ id: doc.id, ...doc.data() }))
       .filter(sale => !sale.isClosed); 
@@ -53,14 +201,14 @@ export const getActiveSales = async () => {
   }
 };
 
-// NUEVA: CERRAR CAJA
-// 1. Guarda el resumen en 'cashbox_history'
-// 2. Marca todas las ventas actuales como 'isClosed: true'
+/**
+ * 10. Cerrar Caja (Archiva ventas y guarda historial)
+ */
 export const closeCashbox = async (salesIds, summaryData) => {
   try {
     const batch = writeBatch(db);
 
-    // 1. Crear registro histórico de la caja
+    // A. Crear registro histórico de cierre
     const historyRef = doc(collection(db, CASHBOX_HISTORY_COLLECTION));
     batch.set(historyRef, {
       ...summaryData,
@@ -69,19 +217,22 @@ export const closeCashbox = async (salesIds, summaryData) => {
       itemsCount: salesIds.length
     });
 
-    // 2. Marcar ventas como cerradas (para que no salgan en la caja actual)
+    // B. Marcar ventas como cerradas
     salesIds.forEach(id => {
       const saleRef = doc(db, SALES_COLLECTION, id);
-      batch.update(saleRef, { isClosed: true, cashboxId: historyRef.id });
+      batch.update(saleRef, { 
+        isClosed: true, 
+        cashboxId: historyRef.id 
+      });
     });
 
     await batch.commit();
     return { success: true };
   } catch (error) {
-    console.error(error);
+    console.error("Error al cerrar caja:", error);
     return { success: false, error };
   }
 };
 
-// Mantenemos la vieja getSales por si acaso, pero la app usará getActiveSales
+// Alias para compatibilidad con componentes anteriores
 export const getSales = getActiveSales;
