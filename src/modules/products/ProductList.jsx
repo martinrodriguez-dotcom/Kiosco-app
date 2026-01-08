@@ -346,7 +346,7 @@ const ProductList = () => {
         >
           <ScanBarcode size={28} />
           <div className="text-left">
-            <span className="block font-black text-xl leading-none">ABRIR CAJA</span>
+            <span className="block font-black text-xl leading-none">NUEVA VENTA</span>
             <span className="text-blue-200 text-xs">Modo Rápido</span>
           </div>
         </button>
