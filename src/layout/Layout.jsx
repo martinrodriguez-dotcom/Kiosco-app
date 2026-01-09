@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, Outlet } from 'react-router-dom';
 import { 
   Menu, X, Home, Package, ShoppingCart, Truck, 
-  ClipboardList, LogOut, User, FileText 
+  ClipboardList, LogOut, User, FileText, TrendingUp 
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -104,6 +104,11 @@ const Layout = () => {
                 <li>
                   <Link to="/historial-cajas" onClick={closeMenu} className="flex items-center gap-3 p-3 text-gray-700 hover:bg-orange-50 hover:text-orange-600 rounded-lg transition">
                     <FileText size={20} /> Historial Cajas
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/estadisticas" onClick={closeMenu} className="flex items-center gap-3 p-3 text-gray-700 hover:bg-purple-50 hover:text-purple-600 rounded-lg transition">
+                    <TrendingUp size={20} /> Estadísticas
                   </Link>
                 </li>
               </>
