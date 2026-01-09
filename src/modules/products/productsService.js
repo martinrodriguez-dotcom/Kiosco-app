@@ -295,3 +295,22 @@ export const closeCashbox = async (salesIds, summaryData, sessionId) => {
 
 // Alias para compatibilidad con componentes anteriores
 export const getSales = getActiveSales;
+
+/**
+ * 13. Obtener Historial de Sesiones Cerradas
+ */
+export const getClosedSessions = async () => {
+  try {
+    const q = query(
+      collection(db, SESSIONS_COLLECTION), 
+      where("status", "==", "closed"),
+      orderBy("closedAt", "desc")
+    );
+    const querySnapshot = await getDocs(q);
+    const sessions = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return { success: true, data: sessions };
+  } catch (error) {
+    console.error("Error fetching sessions:", error);
+    return { success: false, error };
+  }
+};
