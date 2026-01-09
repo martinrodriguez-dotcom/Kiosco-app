@@ -13,6 +13,7 @@
     "firebase": "^10.7.1",
     "html5-qrcode": "^2.3.8",
     "jspdf": "^2.5.1",
+    "recharts": "^2.10.3",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
