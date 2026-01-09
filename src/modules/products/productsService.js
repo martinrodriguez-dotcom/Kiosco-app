@@ -314,3 +314,30 @@ export const getClosedSessions = async () => {
     return { success: false, error };
   }
 };
+
+/**
+ * 14. Obtener Ventas para Estadísticas (Últimos 30 días)
+ */
+export const getSalesForStats = async () => {
+  try {
+    // Calculamos la fecha de hace 30 días
+    const dateLimit = new Date();
+    dateLimit.setDate(dateLimit.getDate() - 30);
+    const timestampLimit = Timestamp.fromDate(dateLimit);
+
+    // Traemos ventas desde esa fecha
+    const q = query(
+      collection(db, SALES_COLLECTION),
+      where("createdAt", ">=", timestampLimit),
+      orderBy("createdAt", "asc")
+    );
+
+    const querySnapshot = await getDocs(q);
+    const sales = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    return { success: true, data: sales };
+  } catch (error) {
+    console.error("Error fetching stats:", error);
+    return { success: false, error };
+  }
+};
