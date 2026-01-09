@@ -106,6 +106,19 @@ const Layout = () => {
           </ul>
         </div>
 
+        // ... (dentro del bloque admin)
+<li>
+  <Link to="/cuenta-proveedores" onClick={closeMenu} className="flex items-center gap-3 p-3 text-gray-700 hover:bg-orange-50 hover:text-orange-600 rounded-lg transition">
+    <ClipboardList size={20} /> Ctas. Ctes.
+  </Link>
+</li>
+
+{/* --- AGREGAR ESTO --- */}
+<li>
+  <Link to="/historial-cajas" onClick={closeMenu} className="flex items-center gap-3 p-3 text-gray-700 hover:bg-orange-50 hover:text-orange-600 rounded-lg transition">
+    <FileText size={20} /> Historial Cajas
+  </Link>
+</li>
         {/* FOOTER DEL MENÚ */}
         <div className="absolute bottom-0 left-0 w-full p-4 bg-gray-50 border-t border-gray-200">
             <div className="flex items-center gap-3 mb-4 px-2">
