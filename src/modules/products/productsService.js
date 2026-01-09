@@ -9,6 +9,8 @@ import {
   writeBatch, 
   query, 
   orderBy, 
+  where,
+  limit,
   Timestamp 
 } from "firebase/firestore";
 
@@ -16,6 +18,7 @@ const PRODUCTS_COLLECTION = "products";
 const PAYMENTS_COLLECTION = "supplier_payments";
 const SALES_COLLECTION = "sales";
 const CASHBOX_HISTORY_COLLECTION = "cashbox_history";
+const SESSIONS_COLLECTION = "cashbox_sessions"; 
 
 // --- GESTIÓN DE PRODUCTOS ---
 
@@ -201,28 +204,84 @@ export const getActiveSales = async () => {
   }
 };
 
+// --- GESTIÓN DE SESIONES DE CAJA (NUEVO) ---
+
 /**
- * 10. Cerrar Caja (Archiva ventas y guarda historial)
+ * 10. Verificar si hay una caja abierta
  */
-export const closeCashbox = async (salesIds, summaryData) => {
+export const checkActiveSession = async () => {
+  try {
+    // Buscamos una sesión que NO tenga fecha de cierre (status == "open")
+    const q = query(
+      collection(db, SESSIONS_COLLECTION), 
+      where("status", "==", "open"),
+      limit(1)
+    );
+    const querySnapshot = await getDocs(q);
+    
+    if (!querySnapshot.empty) {
+      const docData = querySnapshot.docs[0];
+      return { success: true, isOpen: true, data: { id: docData.id, ...docData.data() } };
+    }
+    return { success: true, isOpen: false };
+  } catch (error) {
+    console.error("Error checking session:", error);
+    return { success: false, error };
+  }
+};
+
+/**
+ * 11. ABRIR CAJA (Iniciar Día)
+ */
+export const openCashboxSession = async (initData) => {
+  try {
+    const payload = {
+      ...initData, // Aquí viene el cambio inicial y lo del proveedor
+      createdAt: Timestamp.now(),
+      status: "open",
+      closedAt: null
+    };
+    const docRef = await addDoc(collection(db, SESSIONS_COLLECTION), payload);
+    return { success: true, id: docRef.id };
+  } catch (error) {
+    return { success: false, error };
+  }
+};
+
+/**
+ * 12. CERRAR CAJA (Actualizada con Sesiones)
+ */
+export const closeCashbox = async (salesIds, summaryData, sessionId) => {
   try {
     const batch = writeBatch(db);
 
-    // A. Crear registro histórico de cierre
+    // A. Actualizamos la sesión a "cerrada"
+    if (sessionId) {
+        const sessionRef = doc(db, SESSIONS_COLLECTION, sessionId);
+        batch.update(sessionRef, {
+            status: "closed",
+            closedAt: Timestamp.now(),
+            finalSummary: summaryData // Guardamos el resumen final en la sesión
+        });
+    }
+
+    // B. Crear registro histórico de cierre (Backup en colección antigua por seguridad)
     const historyRef = doc(collection(db, CASHBOX_HISTORY_COLLECTION));
     batch.set(historyRef, {
       ...summaryData,
       createdAt: Timestamp.now(),
       closedAt: Timestamp.now(),
-      itemsCount: salesIds.length
+      itemsCount: salesIds.length,
+      sessionId: sessionId || null
     });
 
-    // B. Marcar ventas como cerradas
+    // C. Marcar ventas como cerradas
     salesIds.forEach(id => {
       const saleRef = doc(db, SALES_COLLECTION, id);
       batch.update(saleRef, { 
         isClosed: true, 
-        cashboxId: historyRef.id 
+        cashboxId: historyRef.id,
+        sessionId: sessionId || null
       });
     });
 
