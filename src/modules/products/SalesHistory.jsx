@@ -1,25 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { getActiveSales, closeCashbox, checkActiveSession, openCashboxSession, getPaymentsBySession } from './productsService';
-import { Calendar, CreditCard, Banknote, Download, X, AlertTriangle, CheckCircle, Lock, Play, Truck, PlusCircle } from 'lucide-react';
+import { Calendar, CreditCard, Banknote, Download, X, CheckCircle, Lock, Play, Truck, PlusCircle } from 'lucide-react';
 import { jsPDF } from "jspdf";
 import { Link } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext'; // Importante para saber quién cierra
 
 const SalesHistory = () => {
-  // Datos
+  const { user } = useAuth(); // Obtenemos el usuario logueado
+  
+  // Estados de Datos
   const [sales, setSales] = useState([]);
-  const [payments, setPayments] = useState([]); // Nuevos pagos
+  const [payments, setPayments] = useState([]);
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   
-  // UI Apertura
+  // Estados de Interfaz
   const [isSessionOpen, setIsSessionOpen] = useState(false);
   const [openingData, setOpeningData] = useState({
     cambioInicial: '',
     montoReservado: '',
     proveedorReserva: ''
   });
-
-  // UI Cierre
   const [showConfirmClose, setShowConfirmClose] = useState(false);
   const [showFinalReport, setShowFinalReport] = useState(false);
   const [closingData, setClosingData] = useState(null);
@@ -30,18 +31,18 @@ const SalesHistory = () => {
 
   const initPage = async () => {
     setLoading(true);
-    // 1. Chequear caja
+    // 1. Chequear si hay caja abierta
     const sessionRes = await checkActiveSession();
     
     if (sessionRes.isOpen) {
       setIsSessionOpen(true);
       setSession(sessionRes.data);
       
-      // 2. Cargar Ventas
+      // 2. Cargar Ventas activas
       const salesRes = await getActiveSales();
       if (salesRes.success) setSales(salesRes.data);
 
-      // 3. Cargar Pagos de esta sesión (NUEVO)
+      // 3. Cargar Pagos realizados en esta sesión
       const payRes = await getPaymentsBySession(sessionRes.data.id);
       if (payRes.success) setPayments(payRes.data);
 
@@ -53,11 +54,11 @@ const SalesHistory = () => {
     setLoading(false);
   };
 
-  // --- APERTURA ---
+  // --- APERTURA DE CAJA ---
   const handleOpenCashbox = async (e) => {
     e.preventDefault();
     if (openingData.cambioInicial === '') {
-        alert("Ingresa el cambio inicial (0 si no hay).");
+        alert("Por favor ingresa el cambio inicial (o 0).");
         return;
     }
 
@@ -72,12 +73,12 @@ const SalesHistory = () => {
     if (res.success) {
         initPage(); 
     } else {
-        alert("Error al abrir caja");
+        alert("Error al abrir la caja.");
         setLoading(false);
     }
   };
 
-  // --- CÁLCULOS MATEMÁTICOS ---
+  // --- CÁLCULOS MATEMÁTICOS (FORMULA NUEVA) ---
   const totalVentasEfectivo = sales.filter(s => s.metodoPago === 'Efectivo').reduce((acc, curr) => acc + curr.total, 0);
   const totalVentasMP = sales.filter(s => s.metodoPago === 'Mercado Pago').reduce((acc, curr) => acc + curr.total, 0);
   
@@ -87,28 +88,37 @@ const SalesHistory = () => {
   const inicioCaja = session ? parseFloat(session.cambioInicial) : 0;
   const reservadoInicial = session ? parseFloat(session.montoReservado) : 0;
   
-  // LÓGICA DE ORO: Dinero Físico = (Cambio + Reserva + VentasEfec) - PagosEfec
-  const dineroFisicoEnCaja = (inicioCaja + reservadoInicial + totalVentasEfectivo) - totalPagosEfectivo;
+  // 1. SUBTOTAL FÍSICO (Lo que hay en el cajón de billetes)
+  // Fórmula: (Cambio + Reserva + VentasEfec) - PagosEfec
+  const subTotalFisico = (inicioCaja + reservadoInicial + totalVentasEfectivo) - totalPagosEfectivo;
 
-  // Calculamos si consumimos la reserva (visual)
+  // 2. TOTAL GENERAL (La suma de todo el valor generado, físico + virtual)
+  const totalGeneral = subTotalFisico + totalVentasMP;
+
+  // Visualización de reserva restante (para saber si me gasté la reserva)
   const reservaRestante = Math.max(0, reservadoInicial - totalPagosEfectivo);
 
-  // --- CIERRE ---
+
+  // --- CIERRE DE CAJA ---
   const handleConfirmClose = async () => {
+    // Preparamos el objeto con TODOS los datos calculados
     const finalData = {
+      inicioCaja,
+      reservadoInicial,
       efectivoVentas: totalVentasEfectivo,
+      pagosRealizados: totalPagosEfectivo,
+      subTotalFisico, // El dinero en cajón
       mpVentas: totalVentasMP,
-      totalVentas: totalVentasEfectivo + totalVentasMP,
-      inicioCaja: inicioCaja,
-      reservadoInicial: reservadoInicial,
-      pagosRealizados: totalPagosEfectivo, // Guardamos cuánto se pagó
-      totalFisicoEsperado: dineroFisicoEnCaja,
+      totalGeneral,   // El total final
+      
+      closedBy: user?.email || 'Desconocido', // Guardamos quién cerró
       salesSnapshot: [...sales],
-      paymentsSnapshot: [...payments], // Guardamos el detalle de pagos
+      paymentsSnapshot: [...payments],
       date: new Date()
     };
 
     const salesIds = sales.map(s => s.id);
+    // Enviamos a Firebase
     const res = await closeCashbox(salesIds, finalData, session?.id); 
 
     if (res.success) {
@@ -120,47 +130,83 @@ const SalesHistory = () => {
       setShowConfirmClose(false);
       setShowFinalReport(true);
     } else {
-      alert("Error al cerrar caja");
+      alert("Error al cerrar la caja. Intente nuevamente.");
     }
   };
 
-  // --- PDF ---
+  // --- GENERACIÓN DE PDF (ESTRUCTURA SOLICITADA) ---
   const generatePDF = (data) => {
     const doc = new jsPDF();
     const fecha = new Date().toLocaleDateString();
+    const hora = new Date().toLocaleTimeString();
     
-    doc.setFillColor(30, 58, 138); 
+    // Encabezado
+    doc.setFillColor(30, 58, 138); // Azul
     doc.rect(0, 0, 210, 40, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(22);
     doc.text("Cierre de Caja", 105, 20, null, null, "center");
     
+    doc.setFontSize(10);
+    doc.text(`Responsable: ${data.closedBy}`, 105, 30, null, null, "center");
+    doc.text(`${fecha} - ${hora}`, 105, 35, null, null, "center");
+    
     doc.setTextColor(0, 0, 0);
     let y = 60;
-    doc.setFontSize(14); doc.setFont("helvetica", "bold");
-    doc.text("BALANCE DE EFECTIVO", 20, y); y += 10;
     
-    doc.setFontSize(12); doc.setFont("helvetica", "normal");
-    doc.text(`(+) Cambio Inicial: $${data.inicioCaja}`, 20, y); y += 8;
-    doc.text(`(+) Reserva Inicial: $${data.reservadoInicial}`, 20, y); y += 8;
-    doc.text(`(+) Ventas Efectivo: $${data.efectivoVentas}`, 20, y); y += 8;
-    doc.setTextColor(220, 38, 38); // Rojo
-    doc.text(`(-) Pagos a Proveedores: $${data.pagosRealizados}`, 20, y); y += 12;
-    
-    doc.setTextColor(0, 0, 0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.text(`(=) TOTAL EN CAJÓN: $${data.totalFisicoEsperado}`, 20, y); y += 20;
+    // Helper para filas alineadas
+    const addRow = (label, value, isBold = false, isRed = false, isTotal = false) => {
+        doc.setFont("helvetica", isBold ? "bold" : "normal");
+        doc.setFontSize(isTotal ? 14 : 12);
+        doc.setTextColor(isRed ? 200 : 0, 0, 0);
+        doc.text(label, 20, y);
+        doc.text(`$ ${parseFloat(value).toFixed(2)}`, 190, y, null, null, "right");
+        y += isTotal ? 15 : 10;
+        doc.setTextColor(0,0,0); // Reset color
+    };
 
-    doc.setFontSize(12);
-    doc.text(`TOTAL VENTAS NETAS: $${data.totalVentas}`, 20, y);
+    // SECCIÓN 1: CAJÓN FÍSICO
+    doc.setFontSize(14); 
+    doc.setFont("helvetica", "bold"); 
+    doc.text("BALANCE DE EFECTIVO (CAJÓN)", 20, y); 
+    y += 10;
+    doc.setDrawColor(200);
+    doc.line(20, y-2, 190, y-2);
+    
+    addRow("(+) Cambio Inicial", data.inicioCaja);
+    addRow("(+) Reserva Proveedores", data.reservadoInicial);
+    addRow("(+) Ventas Efectivo", data.efectivoVentas);
+    addRow("(-) Pagos a Proveedores", data.pagosRealizados, false, true); // Rojo
+    
+    doc.line(20, y-2, 190, y-2);
+    // Subtotal Físico
+    addRow("(=) SUBTOTAL CAJA (FÍSICO)", data.subTotalFisico, true, false, true);
+
+    // SECCIÓN 2: TOTAL GENERAL
+    addRow("(+) Ventas Mercado Pago", data.mpVentas);
+    
+    // Fondo gris para el total final
+    doc.setFillColor(240, 240, 240);
+    doc.rect(15, y-5, 180, 15, 'F');
+    y += 5;
+    
+    doc.setTextColor(0, 0, 150); // Azul oscuro
+    addRow("(=) TOTAL GENERAL DE CAJA", data.totalGeneral, true, false, true);
+
+    // Pie de firma
+    doc.setFontSize(10);
+    doc.setTextColor(150);
+    doc.text("__________________________", 105, 250, null, null, "center");
+    doc.text(`Firma: ${data.closedBy.split('@')[0]}`, 105, 258, null, null, "center");
 
     doc.save(`Cierre_${fecha.replace(/\//g,'-')}.pdf`);
   };
 
-  if (loading) return <div className="p-10 text-center animate-pulse font-bold text-gray-500">Cargando datos de caja...</div>;
+  if (loading) return <div className="p-10 text-center animate-pulse text-gray-500 font-bold">Cargando datos de caja...</div>;
 
-  // --- VISTA 1: APERTURA ---
+  // ----------------------------------------------------
+  // VISTA 1: CAJA CERRADA (FORMULARIO DE APERTURA)
+  // ----------------------------------------------------
   if (!isSessionOpen && !showFinalReport) {
     return (
         <div className="max-w-md mx-auto mt-10 p-8 bg-white rounded-2xl shadow-xl border border-blue-100 animate-fadeIn">
@@ -180,7 +226,7 @@ const SalesHistory = () => {
                     <input 
                         type="number" 
                         required
-                        className="w-full p-3 rounded-lg border-2 border-green-200 focus:border-green-500 outline-none text-2xl font-bold text-gray-700"
+                        className="w-full p-3 rounded-lg border-2 border-green-200 focus:border-green-500 outline-none text-2xl font-bold text-gray-700 placeholder-green-200/50"
                         placeholder="$ 0"
                         value={openingData.cambioInicial}
                         onChange={e => setOpeningData({...openingData, cambioInicial: e.target.value})}
@@ -209,7 +255,7 @@ const SalesHistory = () => {
                     </div>
                 </div>
 
-                <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold text-xl shadow-lg transition transform active:scale-95">
+                <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold text-xl shadow-lg transition transform active:scale-95 flex justify-center items-center gap-2">
                     CONFIRMAR APERTURA
                 </button>
             </form>
@@ -217,11 +263,13 @@ const SalesHistory = () => {
     );
   }
 
-  // --- VISTA 2: CAJA ABIERTA ---
+  // ----------------------------------------------------
+  // VISTA 2: CAJA ABIERTA (DASHBOARD)
+  // ----------------------------------------------------
   return (
     <div className="animate-fadeIn pb-24 px-1">
       
-      {/* HEADER DATOS */}
+      {/* HEADER: Estado del Dinero */}
       {session && (
         <div className="bg-gray-800 text-white p-5 rounded-2xl shadow-lg mb-6 flex flex-wrap justify-between items-center gap-4">
            <div className="flex gap-6">
@@ -243,13 +291,13 @@ const SalesHistory = () => {
            </div>
 
             <div className="bg-gray-700 px-4 py-2 rounded-xl text-right border border-gray-600">
-                <p className="text-green-400 text-[10px] uppercase font-bold tracking-wider mb-1">Total Físico en Cajón</p>
-                <p className="font-black text-3xl text-white tracking-tight">${dineroFisicoEnCaja}</p>
+                <p className="text-green-400 text-[10px] uppercase font-bold tracking-wider mb-1">En Cajón (Físico)</p>
+                <p className="font-black text-3xl text-white tracking-tight">${subTotalFisico}</p>
             </div>
         </div>
       )}
 
-      {/* BOTONES ACCIÓN */}
+      {/* BOTONES DE ACCIÓN */}
       <div className="flex justify-between items-center mb-4 px-1">
          <div className="flex gap-2">
             <Link to="/pago-proveedores" className="bg-orange-100 text-orange-700 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-orange-200 transition">
@@ -264,7 +312,7 @@ const SalesHistory = () => {
         </button>
       </div>
 
-      {/* SECCIÓN PAGOS A PROVEEDORES (NUEVO VISUAL) */}
+      {/* SECCIÓN PAGOS A PROVEEDORES (Visualización en lista) */}
       {payments.length > 0 && (
          <div className="mb-6 animate-fadeIn">
             <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2 text-sm">
@@ -287,14 +335,14 @@ const SalesHistory = () => {
          </div>
       )}
 
-      {/* SECCIÓN VENTAS */}
+      {/* SECCIÓN VENTAS (Visualización en lista) */}
       <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2 text-sm">
         <Calendar size={16} className="text-blue-500"/> Ventas del día (Entradas)
       </h3>
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden min-h-[150px]">
         {sales.length === 0 ? (
             <div className="p-10 text-center flex flex-col items-center justify-center h-full">
-                <p className="text-gray-400 font-medium text-sm">Sin ventas registradas.</p>
+                <p className="text-gray-400 font-medium text-sm">No hay ventas registradas aún.</p>
             </div>
         ) : (
             sales.map((sale) => (
@@ -308,6 +356,7 @@ const SalesHistory = () => {
                             {new Date(sale.createdAt.seconds * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
                         </span>
                     </div>
+                    <p className="text-xs text-gray-500">{sale.items.length} productos</p>
                 </div>
                 <span className="font-bold text-gray-800 text-lg">${sale.total}</span>
             </div>
@@ -315,42 +364,57 @@ const SalesHistory = () => {
         )}
       </div>
 
-      {/* MODAL CERRAR */}
+      {/* --- MODAL CONFIRMACIÓN DE CIERRE --- */}
       {showConfirmClose && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
            <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
               <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-xl font-bold text-gray-800">Resumen de Cierre</h3>
-                  <button onClick={() => setShowConfirmClose(false)}><X size={20} className="text-gray-400"/></button>
+                  <h3 className="text-xl font-bold text-gray-800 text-center w-full">Resumen de Cierre</h3>
+                  <button onClick={() => setShowConfirmClose(false)} className="absolute right-6"><X size={20} className="text-gray-400"/></button>
               </div>
               
-              <div className="bg-gray-50 p-4 rounded-xl mb-6 border border-gray-100 space-y-2 text-sm">
-                 <div className="flex justify-between text-gray-500">
-                    <span>Cambio Inicial:</span> <span>${inicioCaja}</span>
+              {/* Tabla de resumen idéntica al PDF */}
+              <div className="bg-gray-50 p-4 rounded-xl mb-6 border border-gray-100 text-sm space-y-2">
+                 <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 border-b pb-1">Dinero Físico (Cajón)</h4>
+                 
+                 <div className="flex justify-between text-gray-600">
+                    <span>(+) Cambio Inicial:</span> <span>${inicioCaja}</span>
                  </div>
-                 <div className="flex justify-between text-gray-500">
-                    <span>Reserva Inicial:</span> <span>${reservadoInicial}</span>
+                 <div className="flex justify-between text-gray-600">
+                    <span>(+) Reserva Prov:</span> <span>${reservadoInicial}</span>
                  </div>
-                 <div className="flex justify-between text-gray-500">
-                    <span>Ventas Efectivo:</span> <span>${totalVentasEfectivo}</span>
+                 <div className="flex justify-between text-gray-600">
+                    <span>(+) Ventas Efectivo:</span> <span>${totalVentasEfectivo}</span>
                  </div>
-                 <div className="flex justify-between text-red-600 font-medium bg-red-50 p-1 rounded">
-                    <span>Pagos Proveedores:</span> <span>-${totalPagosEfectivo}</span>
+                 <div className="flex justify-between text-red-600 font-medium bg-red-50 p-1 rounded -mx-1">
+                    <span>(-) Pagos Prov:</span> <span>-${totalPagosEfectivo}</span>
                  </div>
-                 <div className="border-t pt-2 mt-2 flex justify-between font-black text-lg text-gray-800">
-                    <span>HAY EN CAJÓN:</span> <span>${dineroFisicoEnCaja}</span>
+                 
+                 <div className="border-t border-gray-300 my-2"></div>
+                 <div className="flex justify-between font-bold text-gray-800 bg-gray-200 p-2 rounded -mx-2">
+                    <span>(=) SUBTOTAL CAJA:</span> <span>${subTotalFisico}</span>
+                 </div>
+                 
+                 <h4 className="text-xs font-bold text-gray-400 uppercase mt-4 mb-2 border-b pb-1">Total General</h4>
+                 <div className="flex justify-between pt-1">
+                    <span>(+) Ventas MP:</span> <span className="text-blue-600 font-bold">${totalVentasMP}</span>
+                 </div>
+                 
+                 <div className="border-t border-gray-300 my-2"></div>
+                 <div className="flex justify-between font-black text-xl text-blue-900">
+                    <span>TOTAL GENERAL:</span> <span>${totalGeneral}</span>
                  </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                 <button onClick={() => setShowConfirmClose(false)} className="bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold">Cancelar</button>
-                 <button onClick={handleConfirmClose} className="bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700">Confirmar</button>
+                 <button onClick={() => setShowConfirmClose(false)} className="bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-50">Cancelar</button>
+                 <button onClick={handleConfirmClose} className="bg-blue-900 text-white py-3 rounded-xl font-bold hover:bg-blue-800 shadow-lg">Confirmar Cierre</button>
               </div>
            </div>
         </div>
       )}
 
-      {/* MODAL ÉXITO */}
+      {/* --- MODAL ÉXITO FINAL --- */}
       {showFinalReport && closingData && (
         <div className="fixed inset-0 bg-blue-900/95 z-50 flex items-center justify-center p-4 backdrop-blur-md animate-fadeIn">
            <div className="bg-white rounded-3xl p-8 w-full max-w-sm text-center shadow-2xl transform scale-105">
@@ -358,14 +422,17 @@ const SalesHistory = () => {
                  <CheckCircle size={40} className="text-green-600"/>
               </div>
               <h3 className="text-3xl font-black text-gray-800 mb-2">¡Caja Cerrada!</h3>
-              <p className="text-gray-500 text-sm mb-8">El dinero físico ha sido calculado descontando pagos.</p>
+              <p className="text-gray-500 text-sm mb-4">La sesión ha finalizado correctamente.</p>
+              <div className="text-xs text-gray-400 mb-6 bg-gray-50 p-2 rounded">
+                 Cerrado por: <b>{user?.email}</b>
+              </div>
               
-              <button onClick={() => generatePDF(closingData)} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 mb-4 shadow-lg hover:bg-blue-700">
+              <button onClick={() => generatePDF(closingData)} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 mb-4 shadow-lg hover:bg-blue-700 transition">
                  <Download size={22}/> Descargar PDF
               </button>
               
               <button onClick={() => { setShowFinalReport(false); initPage(); }} className="text-gray-400 text-sm hover:text-gray-600 hover:underline">
-                 Volver
+                 Volver al inicio
               </button>
            </div>
         </div>
