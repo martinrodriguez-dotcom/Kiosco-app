@@ -12,7 +12,8 @@ import ShopDashboard from './modules/products/ShopDashboard';
 import AddProductForm from './modules/products/AddProductForm';
 import RestockForm from './modules/products/RestockForm';
 import EditProductForm from './modules/products/EditProductForm';
-import CashboxHistoryList from './modules/products/CashboxHistoryList'; // <--- NUEVO IMPORT
+import CashboxHistoryList from './modules/products/CashboxHistoryList';
+import StatsDashboard from './modules/products/StatsDashboard'; // <--- NUEVO IMPORT
 
 // Módulos de Proveedores
 import SupplierPaymentForm from './modules/products/SupplierPaymentForm';
@@ -44,8 +45,9 @@ function App() {
             <Route path="pago-proveedores" element={<SupplierPaymentForm />} />
             <Route path="cuenta-proveedores" element={<SupplierAccount />} />
             
-            {/* Gestión de Cajas */}
+            {/* Gestión de Cajas y Reportes */}
             <Route path="historial-cajas" element={<CashboxHistoryList />} />
+            <Route path="estadisticas" element={<StatsDashboard />} />
           </Route>
         </Routes>
       </BrowserRouter>
