@@ -11,7 +11,7 @@ const AddProductForm = () => {
     costoBulto: 0,
     cantidadBulto: 1,     
     cantidadComprada: 0,  
-    margenGanancia: 30,
+    margenGanancia: 40,
     tieneIVA: true,
   });
 
